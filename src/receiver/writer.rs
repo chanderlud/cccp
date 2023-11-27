@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use async_channel::Sender;
 use log::{debug, info};
-use tokio::fs::File;
+use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 use crate::receiver::metadata::MetaData;
@@ -18,11 +18,17 @@ pub(crate) async fn writer(
     confirmation: Sender<u64>,
     mut meta_data: MetaData,
 ) -> std::io::Result<()> {
-    let file = File::create(path).await?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .await?;
+
     let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
 
     let mut position = 0;
-    let mut data_map: BTreeMap<u64, (usize, Vec<u8>)> = BTreeMap::new();
+    let mut data_map: BTreeMap<u64, (u64, usize, Vec<u8>)> = BTreeMap::new();
     let completed_indexes: HashSet<u64> = HashSet::from_iter(meta_data.indexes.clone());
 
     loop {
@@ -47,7 +53,6 @@ pub(crate) async fn writer(
         };
 
         confirmation.send(index).await.unwrap();
-        meta_data.complete(index).await.unwrap();
 
         // adjust the position to the next index which is not completed
         while completed_indexes.contains(&position) {
@@ -62,16 +67,18 @@ pub(crate) async fn writer(
             }
             Ordering::Greater => {
                 // if the chunk is ahead of the current position, save it for later
-                data_map.insert(index, (len, buffer));
+                data_map.insert(index, (index, len, buffer));
                 continue;
             }
             Ordering::Equal => {}
         }
 
         write_data(&mut writer, &buffer, &mut position, len).await?;
+        meta_data.complete(index).await.unwrap();
 
-        while let Some((len, buffer)) = data_map.remove(&position) {
+        while let Some((index, len, buffer)) = data_map.remove(&position) {
             write_data(&mut writer, &buffer, &mut position, len).await?;
+            meta_data.complete(index).await.unwrap();
         }
 
         if position >= file_size {
@@ -82,6 +89,7 @@ pub(crate) async fn writer(
 
     writer.flush().await?; // flush the writer
     confirmation.close(); // close the confirmation channel
+    meta_data.remove().await?; // remove the metadata file
 
     Ok(())
 }

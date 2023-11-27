@@ -7,7 +7,6 @@ use std::time::Duration;
 use async_channel::Receiver;
 use deadqueue::limited::Queue;
 use log::{debug, error, info, warn};
-use tokio::fs::remove_file;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -57,8 +56,10 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
     stats.total_data.store(file_size as usize, Relaxed);
     debug!("received manifest: {}", file_size);
 
-    let meta_file = options.destination.file_path.with_extension("metadata");
-    let meta_data = MetaData::new(&meta_file).await?;
+    let meta_data = MetaData::new(&options.destination.file_path).await?;
+    stats
+        .confirmed_data
+        .fetch_add(meta_data.indexes.len() * TRANSFER_BUFFER_SIZE, Relaxed);
 
     debug!("sending {} completed indexes", meta_data.indexes.len());
     send_indexes(&mut socket, &meta_data.indexes).await?;
@@ -114,7 +115,6 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
         file_size, elapsed, speed
     );
 
-    remove_file(meta_file).await?; // clean up metadata file
     Ok(())
 }
 
