@@ -65,9 +65,13 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     let file_size = options.source.file_size().await?;
     stats.total_data.store(file_size as usize, Relaxed);
 
+    // give the receiver time to start listening
+    sleep(Duration::from_millis(1_000)).await;
+
     let mut socket = send_manifest(remote_address, options.start_port, file_size).await?;
     let prior_indexes = receive_indexes(&mut socket).await?; // these indexes are already confirmed
     let prior_indexes: HashSet<u64> = HashSet::from_iter(prior_indexes);
+    debug!("received {} prior confirmed indexes", prior_indexes.len());
     // TODO skip these indexes
 
     let sockets = socket_factory(
@@ -273,6 +277,11 @@ async fn receive_indexes(socket: &mut TcpStream) -> io::Result<Vec<u64>> {
     socket.read_exact(&mut length_buffer).await?;
     let length = u64::from_be_bytes(length_buffer) as usize;
 
+    if length == 0 {
+        debug!("received empty array of indexes");
+        return Ok(Vec::new());
+    }
+
     // resize the buffer to hold all u64 values
     buffer.resize(length * 8, 0);
 
@@ -280,7 +289,6 @@ async fn receive_indexes(socket: &mut TcpStream) -> io::Result<Vec<u64>> {
     socket.read_exact(&mut buffer).await?;
 
     Ok((0..length)
-        .into_iter()
         .map(|i| {
             u64::from_be_bytes([
                 buffer[i * 8],

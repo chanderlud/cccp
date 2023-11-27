@@ -21,7 +21,7 @@ use tokio::fs::File;
 use tokio::io;
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
-use tokio::time::{interval, sleep};
+use tokio::time::interval;
 
 mod receiver;
 mod sender;
@@ -416,9 +416,6 @@ async fn main() {
                     warn!("non 0 receiver exit status: {:?}", result)
                 }
             });
-
-            // we sleep here to give the remote client time to start
-            sleep(Duration::from_secs(1)).await;
 
             tokio::spawn({
                 let stats = stats.clone();

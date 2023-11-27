@@ -67,14 +67,11 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
     debug!("received manifest: {}", file_size);
 
     let meta_file = options.destination.file_path.with_extension("metadata");
-    let meta_data = MetaData::new(
-        file_size,
-        &meta_file,
-    )
-    .await?;
+    let meta_data = MetaData::new(file_size, &meta_file).await?;
 
-    debug!("sending completed indexes");
-    send_indexes(&mut socket, meta_data.completed_indexes()).await?;
+    let completed_indexes = meta_data.completed_indexes();
+    debug!("sending {} completed indexes", completed_indexes.len());
+    send_indexes(&mut socket, completed_indexes).await?;
 
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
