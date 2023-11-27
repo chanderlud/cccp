@@ -23,7 +23,7 @@ pub(crate) async fn writer(
 
     let mut position = 0;
     let mut data_map: BTreeMap<u64, (usize, Vec<u8>)> = BTreeMap::new();
-    let completed_indexes: HashSet<u64> = HashSet::from_iter(meta_data.completed_indexes());
+    let completed_indexes: HashSet<u64> = HashSet::from_iter(meta_data.indexes.clone());
 
     loop {
         let buffer = queue.pop().await;

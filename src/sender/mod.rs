@@ -55,7 +55,7 @@ pub(crate) struct Job {
     data: Vec<u8>, // index (8 bytes) + the file chunk
     index: u64,    // the index of the file chunk
     cached_at: Option<Instant>,
-    reader: bool, // whether the job was added by the reader
+    // reader: bool, // whether the job was added by the reader
 }
 
 pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
@@ -72,7 +72,6 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     let prior_indexes = receive_indexes(&mut socket).await?; // these indexes are already confirmed
     let prior_indexes: HashSet<u64> = HashSet::from_iter(prior_indexes);
     debug!("received {} prior confirmed indexes", prior_indexes.len());
-    // TODO skip these indexes
 
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
@@ -104,10 +103,11 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     tokio::spawn({
         let cache = cache.clone();
         let queue = queue.clone();
+        let read = read.clone();
 
         async {
             if let Err(error) =
-                receive_confirmations(socket, cache, queue, stats.confirmed_data).await
+                receive_confirmations(socket, cache, queue, stats.confirmed_data, read).await
             {
                 error!("confirmation receiver failed: {}", error);
             }
@@ -126,7 +126,7 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
                 socket,
                 cache.clone(),
                 send.clone(),
-                read.clone(),
+                // read.clone(),
             ))
         })
         .collect();
@@ -143,13 +143,7 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     Ok(())
 }
 
-async fn sender(
-    queue: JobQueue,
-    socket: UdpSocket,
-    cache: JobCache,
-    send: Arc<Semaphore>,
-    read: Arc<Semaphore>,
-) {
+async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<Semaphore>) {
     loop {
         let mut job = queue.pop().await; // get the next job
         let permit = send.acquire().await.unwrap(); // acquire a permit
@@ -162,10 +156,10 @@ async fn sender(
             // cache the job
             job.cached_at = Some(Instant::now());
 
-            if job.reader {
-                job.reader = false; // cached jobs are no longer from the reader
-                read.add_permits(1); // add a permit to the reader
-            }
+            // if job.reader {
+            //     job.reader = false; // cached jobs are no longer from the reader
+            //     read.add_permits(1); // add a permit to the reader
+            // }
 
             cache.write().await.insert(job.index, job);
         }
@@ -189,6 +183,7 @@ async fn receive_confirmations(
     cache: JobCache,
     queue: JobQueue,
     confirmed_data: Arc<AtomicUsize>,
+    read: Arc<Semaphore>,
 ) -> io::Result<()> {
     // this solves a problem where a confirmation is received after a job has already been requeued
     let lost_confirmations: Arc<Mutex<Vec<u64>>> = Default::default();
@@ -244,8 +239,10 @@ async fn receive_confirmations(
         socket.flush().await?;
 
         let confirmed_indexes = receive_indexes(&mut socket).await?;
+        let length = confirmed_indexes.len();
 
-        confirmed_data.fetch_add(confirmed_indexes.len() * TRANSFER_BUFFER_SIZE, Relaxed);
+        confirmed_data.fetch_add(length * TRANSFER_BUFFER_SIZE, Relaxed);
+        read.add_permits(length); // add a permit to the reader for each confirmed index
 
         let mut lost_confirmations = lost_confirmations.lock().await;
         let mut cache = cache.write().await;

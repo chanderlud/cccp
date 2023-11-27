@@ -48,7 +48,6 @@ pub(crate) async fn reader(
             data: buffer[..INDEX_SIZE + read].to_vec(),
             index,
             cached_at: None,
-            reader: true,
         });
 
         index += read as u64;

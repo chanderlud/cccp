@@ -105,12 +105,13 @@ impl Options {
         let escaped_destination = self.destination.to_string().replace(' ', "\\ ");
 
         format!(
-            "cccp --mode {} --start-port {} --end-port {} --threads {} --log-level {} {} {}",
+            "cccp --mode {} --start-port {} --end-port {} --threads {} --log-level {} --rate {} {} {}",
             mode,
             self.start_port,
             self.end_port,
             self.threads,
             self.log_level,
+            self.rate,
             escaped_source,
             escaped_destination
         )

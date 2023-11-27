@@ -31,21 +31,12 @@ pub(crate) struct ReceiveError {
 #[derive(Debug)]
 enum ReceiveErrorKind {
     IoError(io::Error),
-    MetadataError(metadata::MetadataError),
 }
 
 impl From<io::Error> for ReceiveError {
     fn from(error: io::Error) -> Self {
         Self {
             _kind: ReceiveErrorKind::IoError(error),
-        }
-    }
-}
-
-impl From<metadata::MetadataError> for ReceiveError {
-    fn from(error: metadata::MetadataError) -> Self {
-        Self {
-            _kind: ReceiveErrorKind::MetadataError(error),
         }
     }
 }
@@ -67,11 +58,10 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
     debug!("received manifest: {}", file_size);
 
     let meta_file = options.destination.file_path.with_extension("metadata");
-    let meta_data = MetaData::new(file_size, &meta_file).await?;
+    let meta_data = MetaData::new(&meta_file).await?;
 
-    let completed_indexes = meta_data.completed_indexes();
-    debug!("sending {} completed indexes", completed_indexes.len());
-    send_indexes(&mut socket, completed_indexes).await?;
+    debug!("sending {} completed indexes", meta_data.indexes.len());
+    send_indexes(&mut socket, &meta_data.indexes).await?;
 
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
@@ -183,7 +173,7 @@ async fn send_confirmations(
                 }
 
                 let taken_vec = mem::take(&mut *data);
-                send_indexes(&mut socket, taken_vec).await.unwrap();
+                send_indexes(&mut socket, &taken_vec).await.unwrap();
             }
         }
     });
@@ -197,12 +187,12 @@ async fn send_confirmations(
 }
 
 // sends an array of indexes to the socket
-async fn send_indexes(socket: &mut TcpStream, data: Vec<u64>) -> io::Result<()> {
+async fn send_indexes(socket: &mut TcpStream, data: &[u64]) -> io::Result<()> {
     let length = data.len() as u64;
     socket.write_all(&length.to_be_bytes()).await?;
 
     // send the array of u64 values
-    for value in &data {
+    for value in data {
         socket.write_all(&value.to_be_bytes()).await?;
     }
 
