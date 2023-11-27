@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
@@ -12,7 +12,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{interval, sleep, Instant};
 
-use crate::{socket_factory, Options, TRANSFER_BUFFER_SIZE, TransferStats};
+use crate::{socket_factory, Options, TransferStats, TRANSFER_BUFFER_SIZE};
 
 mod reader;
 
@@ -20,6 +20,7 @@ type JobQueue = Arc<Queue<Job>>;
 type JobCache = Arc<RwLock<BTreeMap<u64, Job>>>;
 type Result<T> = std::result::Result<T, SendError>;
 
+// how long to wait for a job to be confirmed before requeuing it
 const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
 
 #[derive(Debug)]
@@ -63,7 +64,11 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     let remote_address = options.destination.host.unwrap().parse()?;
     let file_size = options.source.file_size().await?;
     stats.total_data.store(file_size as usize, Relaxed);
-    let socket = send_manifest(remote_address, options.start_port, file_size).await?;
+
+    let mut socket = send_manifest(remote_address, options.start_port, file_size).await?;
+    let prior_indexes = receive_indexes(&mut socket).await?; // these indexes are already confirmed
+    let prior_indexes: HashSet<u64> = HashSet::from_iter(prior_indexes);
+    // TODO skip these indexes
 
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
@@ -89,6 +94,7 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
         options.source.file_path,
         queue.clone(),
         read.clone(),
+        prior_indexes,
     ));
 
     tokio::spawn({
@@ -96,7 +102,9 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
         let queue = queue.clone();
 
         async {
-            if let Err(error) = receive_confirmations(socket, cache, queue, stats.confirmed_data).await {
+            if let Err(error) =
+                receive_confirmations(socket, cache, queue, stats.confirmed_data).await
+            {
                 error!("confirmation receiver failed: {}", error);
             }
         }
@@ -229,40 +237,19 @@ async fn receive_confirmations(
     });
 
     loop {
-        let mut buffer = Vec::new();
-        let mut length_buffer = [0; 8];
-
         socket.flush().await?;
 
-        // read the length of the incoming u64 array
-        socket.read_exact(&mut length_buffer).await?;
-        let length = u64::from_be_bytes(length_buffer) as usize;
+        let confirmed_indexes = receive_indexes(&mut socket).await?;
 
-        confirmed_data.fetch_add(length * TRANSFER_BUFFER_SIZE, Relaxed);
-
-        // resize the buffer to hold all u64 values
-        buffer.resize(length * 8, 0);
-
-        // read the array of u64 values
-        socket.read_exact(&mut buffer).await?;
+        confirmed_data.fetch_add(confirmed_indexes.len() * TRANSFER_BUFFER_SIZE, Relaxed);
 
         let mut lost_confirmations = lost_confirmations.lock().await;
         let mut cache = cache.write().await;
 
         // process the array of u64 values
-        for i in 0..length {
-            let index = u64::from_be_bytes([
-                buffer[i * 8],
-                buffer[i * 8 + 1],
-                buffer[i * 8 + 2],
-                buffer[i * 8 + 3],
-                buffer[i * 8 + 4],
-                buffer[i * 8 + 5],
-                buffer[i * 8 + 6],
-                buffer[i * 8 + 7],
-            ]);
-
+        for index in confirmed_indexes {
             if cache.remove(&index).is_none() {
+                // if the index is not in the cache, it was already requeued
                 lost_confirmations.push(index);
             }
         }
@@ -277,4 +264,34 @@ async fn add_leases_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
         interval.tick().await;
         semaphore.add_permits(1); // add a lease to the semaphore
     }
+}
+
+async fn receive_indexes(socket: &mut TcpStream) -> io::Result<Vec<u64>> {
+    let mut buffer = Vec::new();
+    let mut length_buffer = [0; 8];
+
+    socket.read_exact(&mut length_buffer).await?;
+    let length = u64::from_be_bytes(length_buffer) as usize;
+
+    // resize the buffer to hold all u64 values
+    buffer.resize(length * 8, 0);
+
+    // read the array of u64 values
+    socket.read_exact(&mut buffer).await?;
+
+    Ok((0..length)
+        .into_iter()
+        .map(|i| {
+            u64::from_be_bytes([
+                buffer[i * 8],
+                buffer[i * 8 + 1],
+                buffer[i * 8 + 2],
+                buffer[i * 8 + 3],
+                buffer[i * 8 + 4],
+                buffer[i * 8 + 5],
+                buffer[i * 8 + 6],
+                buffer[i * 8 + 7],
+            ])
+        })
+        .collect())
 }

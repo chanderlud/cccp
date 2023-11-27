@@ -3,9 +3,9 @@ use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
@@ -282,7 +282,7 @@ impl From<std::io::Error> for CustomParseErrors {
 #[derive(Clone, Default)]
 struct TransferStats {
     confirmed_data: Arc<AtomicUsize>,
-    total_data: Arc<AtomicUsize>
+    total_data: Arc<AtomicUsize>,
 }
 
 #[tokio::main]
@@ -318,7 +318,10 @@ async fn main() {
             // UDP header + INDEX + DATA
             let packet_size = (8 + INDEX_SIZE + TRANSFER_BUFFER_SIZE) as u64;
             let pps_rate = options.rate / packet_size;
-            info!("converted {} byte/s rate to {} packet/s rate", options.rate, pps_rate);
+            info!(
+                "converted {} byte/s rate to {} packet/s rate",
+                options.rate, pps_rate
+            );
             options.rate = pps_rate;
 
             if let Some(address) = options.bind_address.as_ref() {
@@ -371,7 +374,7 @@ async fn main() {
                 Err(error) => {
                     warn!("failed to use ssh key auth: {}", error);
                     password_auth().unwrap()
-                },
+                }
             };
 
             let client = loop {
@@ -518,7 +521,8 @@ async fn print_progress(stats: TransferStats) {
 
     loop {
         interval.tick().await;
-        let progress = stats.confirmed_data.load(Relaxed) as f64 / stats.total_data.load(Relaxed) as f64;
+        let progress =
+            stats.confirmed_data.load(Relaxed) as f64 / stats.total_data.load(Relaxed) as f64;
         bar.set_position((progress * 100_f64) as u64);
     }
 }

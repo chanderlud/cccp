@@ -1,12 +1,14 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::io::SeekFrom;
 use std::path::PathBuf;
 
 use async_channel::Sender;
 use log::{debug, info};
 use tokio::fs::File;
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 
+use crate::receiver::metadata::MetaData;
 use crate::{ByteQueue, INDEX_SIZE, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
 
 pub(crate) async fn writer(
@@ -14,12 +16,14 @@ pub(crate) async fn writer(
     queue: ByteQueue,
     file_size: u64,
     confirmation: Sender<u64>,
+    mut meta_data: MetaData,
 ) -> std::io::Result<()> {
     let file = File::create(path).await?;
     let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
 
     let mut position = 0;
     let mut data_map: BTreeMap<u64, (usize, Vec<u8>)> = BTreeMap::new();
+    let completed_indexes: HashSet<u64> = HashSet::from_iter(meta_data.completed_indexes());
 
     loop {
         let buffer = queue.pop().await;
@@ -43,6 +47,13 @@ pub(crate) async fn writer(
         };
 
         confirmation.send(index).await.unwrap();
+        meta_data.complete(index).await.unwrap();
+
+        // adjust the position to the next index which is not completed
+        while completed_indexes.contains(&position) {
+            position += TRANSFER_BUFFER_SIZE as u64;
+            writer.seek(SeekFrom::Start(position)).await?;
+        }
 
         match index.cmp(&position) {
             Ordering::Less => {
@@ -70,7 +81,7 @@ pub(crate) async fn writer(
     }
 
     writer.flush().await?; // flush the writer
-    confirmation.close();  // close the confirmation channel
+    confirmation.close(); // close the confirmation channel
 
     Ok(())
 }

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -9,7 +10,12 @@ use tokio::sync::Semaphore;
 use crate::sender::{Job, JobQueue};
 use crate::{INDEX_SIZE, READ_BUFFER_SIZE, TRANSFER_BUFFER_SIZE};
 
-pub(crate) async fn reader(path: PathBuf, queue: JobQueue, read: Arc<Semaphore>) -> Result<()> {
+pub(crate) async fn reader(
+    path: PathBuf,
+    queue: JobQueue,
+    read: Arc<Semaphore>,
+    prior_indexes: HashSet<u64>,
+) -> Result<()> {
     let file = File::open(path).await?;
     let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
     let mut index = 0_u64;
@@ -17,6 +23,11 @@ pub(crate) async fn reader(path: PathBuf, queue: JobQueue, read: Arc<Semaphore>)
     let mut buffer = vec![0; INDEX_SIZE + TRANSFER_BUFFER_SIZE];
 
     loop {
+        if prior_indexes.contains(&index) {
+            index += TRANSFER_BUFFER_SIZE as u64;
+            continue;
+        }
+
         let permit = read.acquire().await.unwrap();
 
         // write index
