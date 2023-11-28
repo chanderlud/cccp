@@ -431,13 +431,7 @@ async fn main() {
                 info!("executing command on remote host");
                 debug!("command: {}", command);
 
-                let result = client.execute(&command).await?;
-
-                if result.exit_status != 0 {
-                    warn!("non 0 receiver exit status: {:?}", result)
-                }
-
-                Ok::<(), async_ssh2_tokio::Error>(())
+                client.execute(&command).await
             });
 
             let display_handle = tokio::spawn({
@@ -458,7 +452,13 @@ async fn main() {
                 let result = command_handle.await;
 
                 match result {
-                    Ok(Ok(())) => sleep(Duration::from_secs(u64::MAX)).await, // wait forever
+                    Ok(Ok(result)) => {
+                        if result.exit_status != 0 {
+                            error!("remote client failed: {:?}", result);
+                        } else {
+                            sleep(Duration::from_secs(u64::MAX)).await; // wait forever
+                        }
+                    }
                     Ok(Err(error)) => error!("remote client failed: {}", error), // return to terminate execution
                     Err(error) => error!("failed to join remote command: {}", error), // return to terminate execution
                 }
