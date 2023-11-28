@@ -44,6 +44,7 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     let mut buf = [0; 8];
     socket.read_exact(&mut buf).await?;
     let start_index = u64::from_be_bytes(buf);
+    stats.confirmed_data.store(start_index as usize, Relaxed);
 
     debug!("received start index {}", start_index);
 
