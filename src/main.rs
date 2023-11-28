@@ -19,7 +19,7 @@ use rpassword::prompt_password;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
-use tokio::time::interval;
+use tokio::time::{interval, sleep};
 use tokio::{io, select};
 
 mod receiver;
@@ -454,15 +454,23 @@ async fn main() {
                 }
             };
 
+            let command_future = async {
+                let result = command_handle.await;
+
+                match result {
+                    Ok(Ok(())) => sleep(Duration::from_secs(u64::MAX)).await, // wait forever
+                    Ok(Err(error)) => error!("remote client failed: {}", error), // return to terminate execution
+                    Err(error) => error!("failed to join remote command: {}", error), // return to terminate execution
+                }
+            };
+
             select! {
-                result = command_handle => {
-                    if let Ok(Err(error)) = result {
-                        error!("remote client failed: {}", error)
-                    }
-                },
+                _ = command_future => {},
                 _ = display_handle => {},
                 result = main_future => {
-                    info!("{} exited with result {:?}", if sender { "sender" } else { "receiver" }, result);
+                    if let Err(error) = result {
+                        error!("{} failed: {:?}", if sender { "sender" } else { "receiver" }, error);
+                    }
                 }
             }
         }
