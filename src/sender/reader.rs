@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use log::debug;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, BufReader, Result};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader, Result};
 use tokio::sync::Semaphore;
 
 use crate::sender::{Job, JobQueue};
@@ -14,20 +14,22 @@ pub(crate) async fn reader(
     path: PathBuf,
     queue: JobQueue,
     read: Arc<Semaphore>,
-    prior_indexes: HashSet<u64>,
+    mut index: u64,
 ) -> Result<()> {
     let file = File::open(path).await?;
     let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
-    let mut index = 0_u64;
 
     let mut buffer = vec![0; INDEX_SIZE + TRANSFER_BUFFER_SIZE];
 
-    loop {
-        if prior_indexes.contains(&index) {
-            index += TRANSFER_BUFFER_SIZE as u64;
-            continue;
-        }
+    if index > 0 {
+        index += TRANSFER_BUFFER_SIZE as u64;
+    }
 
+    reader.seek(SeekFrom::Start(index)).await?;
+
+    debug!("starting reader at index {}", index);
+
+    loop {
         let permit = read.acquire().await.unwrap();
 
         // write index
@@ -39,8 +41,6 @@ pub(crate) async fn reader(
         // check if EOF
         if read == 0 {
             break;
-        } else if read != TRANSFER_BUFFER_SIZE {
-            debug!("abnormal read {} bytes (should be last chunk)", read);
         }
 
         // push job with index, checksum, and data

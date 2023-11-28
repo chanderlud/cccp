@@ -1,55 +1,57 @@
 use std::path::{Path, PathBuf};
 
-use tokio::fs::{File, OpenOptions};
+use tokio::fs::{remove_file, File, OpenOptions};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub(crate) struct MetaData {
-    pub(crate) indexes: Vec<u64>, // the confirmed indexes
-    writer: File,                 // the metadata file
-    file_path: PathBuf,           // the path to the metadata file
+pub(crate) struct Metadata {
+    pub(crate) initial_index: u64, // the initial index
+    writer: File,                  // the metadata file
+    file_path: PathBuf,            // the path to the metadata file
 }
 
-impl MetaData {
+impl Metadata {
     pub(crate) async fn new(file_path: &Path) -> io::Result<Self> {
         let file_path = Self::format_path(file_path);
 
         if file_path.exists() {
-            // if loading existing metadata fails, create new metadata
-            if let Ok(s) = Self::load(&file_path).await {
-                return Ok(s);
+            if let Ok(metadata) = Self::load(&file_path).await {
+                return Ok(metadata);
             }
+            // if loading existing metadata fails, create new metadata
         }
 
         let writer = File::create(&file_path).await?; // create metadata file
 
         Ok(Self {
-            indexes: Vec::new(),
+            initial_index: 0,
             writer,
             file_path,
         })
     }
 
     // load metadata from file
-    pub(crate) async fn load(file_path: &Path) -> io::Result<Self> {
+    async fn load(file_path: &Path) -> io::Result<Self> {
         let file_path = Self::format_path(file_path);
 
+        // open file for reading and writing
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&file_path)
-            .await?; // open file
+            .await?;
 
-        let mut buffer = Vec::new(); // create buffer for data
-        file.read_to_end(&mut buffer).await?; // read file in buffer
+        let mut buf = [0; 8]; // create buffer for data
 
-        let indexes = buffer
-            .chunks(8)
-            .filter_map(|chunk| Some(u64::from_be_bytes(chunk.try_into().ok()?))) // convert to u64
-            .collect();
+        // read data into buffer until EOF
+        while let Ok(read) = file.read_exact(&mut buf).await {
+            if read == 0 {
+                break; // the buf now contains the last index
+            }
+        }
 
         Ok(Self {
-            indexes,
+            initial_index: u64::from_be_bytes(buf),
             writer: file,
             file_path,
         })
@@ -57,18 +59,16 @@ impl MetaData {
 
     // complete an index
     pub(crate) async fn complete(&mut self, index: u64) -> io::Result<()> {
-        self.indexes.push(index); // add index to confirmed indexes
-        self.writer.write_all(&index.to_be_bytes()).await // write index to file
+        self.writer.write_u64(index).await // write index to file
     }
 
     // remove metadata file
     pub(crate) async fn remove(&self) -> io::Result<()> {
-        tokio::fs::remove_file(&self.file_path).await
+        remove_file(&self.file_path).await
     }
 
+    #[inline]
     fn format_path(path: &Path) -> PathBuf {
-        let mut path = path.to_path_buf();
-        path.set_extension("metadata");
-        path
+        path.with_extension("metadata")
     }
 }

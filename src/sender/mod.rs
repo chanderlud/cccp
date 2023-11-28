@@ -5,57 +5,28 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
-use deadqueue::unlimited::Queue;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
+use tokio::select;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{interval, sleep, Instant};
 
-use crate::{socket_factory, Options, TransferStats, TRANSFER_BUFFER_SIZE};
+use crate::{
+    socket_factory, Options, Queue, Result, TransferStats, MAX_RETRIES, REQUEUE_INTERVAL,
+    TRANSFER_BUFFER_SIZE,
+};
 
 mod reader;
 
-type JobQueue = Arc<Queue<Job>>;
+type JobQueue = Queue<Job>;
 type JobCache = Arc<RwLock<BTreeMap<u64, Job>>>;
-type Result<T> = std::result::Result<T, SendError>;
-
-// how long to wait for a job to be confirmed before requeuing it
-const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
-
-#[derive(Debug)]
-pub(crate) struct SendError {
-    _kind: SendErrorKind,
-}
-
-#[derive(Debug)]
-enum SendErrorKind {
-    ParseError(std::net::AddrParseError),
-    IoError(io::Error),
-}
-
-impl From<std::net::AddrParseError> for SendError {
-    fn from(error: std::net::AddrParseError) -> Self {
-        Self {
-            _kind: SendErrorKind::ParseError(error),
-        }
-    }
-}
-
-impl From<io::Error> for SendError {
-    fn from(error: io::Error) -> Self {
-        Self {
-            _kind: SendErrorKind::IoError(error),
-        }
-    }
-}
 
 #[derive(Clone)]
 pub(crate) struct Job {
     data: Vec<u8>, // index (8 bytes) + the file chunk
     index: u64,    // the index of the file chunk
     cached_at: Option<Instant>,
-    // reader: bool, // whether the job was added by the reader
 }
 
 pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
@@ -69,9 +40,12 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     sleep(Duration::from_millis(1_000)).await;
 
     let mut socket = send_manifest(remote_address, options.start_port, file_size).await?;
-    let prior_indexes = receive_indexes(&mut socket).await?; // these indexes are already confirmed
-    let prior_indexes: HashSet<u64> = HashSet::from_iter(prior_indexes);
-    debug!("received {} prior confirmed indexes", prior_indexes.len());
+
+    let mut buf = [0; 8];
+    socket.read_exact(&mut buf).await?;
+    let start_index = u64::from_be_bytes(buf);
+
+    debug!("received start index {}", start_index);
 
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
@@ -97,53 +71,56 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
         options.source.file_path,
         queue.clone(),
         read.clone(),
-        prior_indexes,
+        start_index,
     ));
 
-    tokio::spawn({
+    let confirmation_handle = tokio::spawn({
         let cache = cache.clone();
         let queue = queue.clone();
         let read = read.clone();
 
-        async {
-            if let Err(error) =
-                receive_confirmations(socket, cache, queue, stats.confirmed_data, read).await
-            {
-                error!("confirmation receiver failed: {}", error);
-            }
-        }
+        receive_confirmations(socket, cache, queue, stats.confirmed_data, read)
     });
 
     let semaphore = send.clone();
     tokio::spawn(add_leases_at_rate(semaphore, options.rate));
 
-    // we never close these threads
-    let _: Vec<_> = sockets
+    let handles: Vec<_> = sockets
         .into_iter()
-        .map(|socket| {
-            tokio::spawn(sender(
-                queue.clone(),
-                socket,
-                cache.clone(),
-                send.clone(),
-                // read.clone(),
-            ))
-        })
+        .map(|socket| tokio::spawn(sender(queue.clone(), socket, cache.clone(), send.clone())))
         .collect();
 
-    let reader_result = reader_handle.await;
-    info!("reader completed: {:?}", reader_result);
+    let sender_future = async {
+        for handle in handles {
+            let _ = handle.await;
+        }
+    };
 
-    while !queue.is_empty() && !cache.read().await.is_empty() {
-        sleep(Duration::from_secs(1)).await;
+    let reader_future = async {
+        _ = reader_handle.await;
+        info!("reader exited");
+
+        while !queue.is_empty() && !cache.read().await.is_empty() {
+            sleep(Duration::from_secs(1)).await;
+        }
+
+        info!("the queue and cache emptied, so hopefully all the data was sent");
+    };
+
+    select! {
+        _ = reader_future => {},
+        _ = sender_future => { warn!("senders exited") },
+        result = confirmation_handle => {
+            info!("confirmation sender exited with result {:?}", result);
+        }
     }
-
-    info!("the queue and cache emptied, so hopefully all the data was sent");
 
     Ok(())
 }
 
 async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<Semaphore>) {
+    let mut retries = 0;
+
     loop {
         let mut job = queue.pop().await; // get the next job
         let permit = send.acquire().await.unwrap(); // acquire a permit
@@ -152,16 +129,17 @@ async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<S
         if let Err(error) = socket.send(&job.data).await {
             error!("failed to send data: {}", error);
             queue.push(job); // put the job back in the queue
+
+            if retries < MAX_RETRIES {
+                retries += 1;
+            } else {
+                break;
+            }
         } else {
             // cache the job
             job.cached_at = Some(Instant::now());
-
-            // if job.reader {
-            //     job.reader = false; // cached jobs are no longer from the reader
-            //     read.add_permits(1); // add a permit to the reader
-            // }
-
             cache.write().await.insert(job.index, job);
+            retries = 0;
         }
 
         permit.forget();
@@ -186,7 +164,7 @@ async fn receive_confirmations(
     read: Arc<Semaphore>,
 ) -> io::Result<()> {
     // this solves a problem where a confirmation is received after a job has already been requeued
-    let lost_confirmations: Arc<Mutex<Vec<u64>>> = Default::default();
+    let lost_confirmations: Arc<Mutex<HashSet<u64>>> = Default::default();
 
     // this thread checks the cache for unconfirmed jobs that have been there for too long and requeues them
     tokio::spawn({
@@ -197,8 +175,6 @@ async fn receive_confirmations(
         async move {
             loop {
                 interval.tick().await;
-
-                let mut counter = 0;
 
                 // collect keys of the entries to remove
                 let keys_to_remove: Vec<_> = cache
@@ -220,17 +196,13 @@ async fn receive_confirmations(
                         if lost_confirmations.contains(&key) {
                             // the job is not requeued because it was confirmed while outside the cache
                             debug!("found lost confirmation for {}", key);
-                            lost_confirmations.retain(|&x| x != key);
+                            lost_confirmations.remove(&key);
                         } else {
                             unconfirmed.cached_at = None;
                             queue.push(unconfirmed);
-                            counter += 1;
                         }
                     }
                 }
-
-                debug!("requeued {} unconfirmed jobs", counter);
-                debug!("queue: {}", queue.len());
             }
         }
     });
@@ -251,7 +223,7 @@ async fn receive_confirmations(
         for index in confirmed_indexes {
             if cache.remove(&index).is_none() {
                 // if the index is not in the cache, it was already requeued
-                lost_confirmations.push(index);
+                lost_confirmations.insert(index);
             }
         }
     }
@@ -263,7 +235,12 @@ async fn add_leases_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
 
     loop {
         interval.tick().await;
-        semaphore.add_permits(1); // add a lease to the semaphore
+
+        // don't want too many permits to build up
+        if semaphore.available_permits() < 1_000 {
+            // add a lease to the semaphore
+            semaphore.add_permits(1);
+        }
     }
 }
 

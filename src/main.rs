@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
 use clap::Parser;
-use deadqueue::limited::Queue;
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -18,20 +17,50 @@ use log::{debug, error, info, warn, LevelFilter};
 use regex::Regex;
 use rpassword::prompt_password;
 use tokio::fs::File;
-use tokio::io;
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
 use tokio::time::interval;
+use tokio::{io, select};
 
 mod receiver;
 mod sender;
 
-type ByteQueue = Arc<Queue<Vec<u8>>>;
+type Queue<T> = Arc<deadqueue::unlimited::Queue<T>>;
+type Result<T> = std::result::Result<T, Error>;
 
 const READ_BUFFER_SIZE: usize = 10_000_000;
-const WRITE_BUFFER_SIZE: usize = 10_000_000;
 const TRANSFER_BUFFER_SIZE: usize = 1024;
 const INDEX_SIZE: usize = std::mem::size_of::<u64>();
+const MAX_RETRIES: usize = 10;
+// how long to wait for a job to be confirmed before requeuing it
+const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
+
+#[derive(Debug)]
+struct Error {
+    _kind: ErrorKind,
+}
+
+#[derive(Debug)]
+enum ErrorKind {
+    IoError(io::Error),
+    ParseError(std::net::AddrParseError),
+}
+
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Self {
+        Self {
+            _kind: ErrorKind::IoError(error),
+        }
+    }
+}
+
+impl From<std::net::AddrParseError> for Error {
+    fn from(error: std::net::AddrParseError) -> Self {
+        Self {
+            _kind: ErrorKind::ParseError(error),
+        }
+    }
+}
 
 #[derive(Parser, Clone, Debug)]
 struct Options {
@@ -128,7 +157,7 @@ enum Mode {
 impl FromStr for Mode {
     type Err = CustomParseErrors;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Ok(match s {
             "l" => Self::Local,
             "rr" => Self::RemoteReceiver,
@@ -152,7 +181,7 @@ struct FileLocation {
 impl FromStr for FileLocation {
     type Err = CustomParseErrors;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         if s.contains('@') {
             let regex = Regex::new("([^:]+)@([^:]+):(.+)").unwrap();
 
@@ -272,10 +301,10 @@ impl Display for CustomParseErrors {
     }
 }
 
-impl Error for CustomParseErrors {}
+impl error::Error for CustomParseErrors {}
 
-impl From<std::io::Error> for CustomParseErrors {
-    fn from(_: std::io::Error) -> Self {
+impl From<io::Error> for CustomParseErrors {
+    fn from(_: io::Error) -> Self {
         Self::IoError
     }
 }
@@ -311,11 +340,9 @@ async fn main() {
         panic!("at least one host must be specified")
     }
 
-    let public_address;
-
-    match options.mode {
+    let public_address = match options.mode {
         Mode::Local => {
-            // only the local client needs to handle the rate
+            // only the local client needs to handle the rate conversion
             // UDP header + INDEX + DATA
             let packet_size = (8 + INDEX_SIZE + TRANSFER_BUFFER_SIZE) as u64;
             let pps_rate = options.rate / packet_size;
@@ -326,23 +353,19 @@ async fn main() {
             options.rate = pps_rate;
 
             if let Some(address) = options.bind_address.as_ref() {
-                public_address = address.clone();
+                address.clone()
             } else {
-                public_address = reqwest::get("http://api.ipify.org")
+                reqwest::get("http://api.ipify.org")
                     .await
                     .unwrap()
                     .text()
                     .await
-                    .unwrap();
+                    .unwrap()
             }
         }
-        Mode::RemoteSender => {
-            public_address = options.source.host.as_ref().unwrap().clone();
-        }
-        Mode::RemoteReceiver => {
-            public_address = options.destination.host.as_ref().unwrap().clone();
-        }
-    }
+        Mode::RemoteSender => options.source.host.as_ref().unwrap().clone(),
+        Mode::RemoteReceiver => options.destination.host.as_ref().unwrap().clone(),
+    };
 
     info!("the bind address is: {}", public_address);
 
@@ -408,54 +431,54 @@ async fn main() {
                 info!("executing command on remote host");
                 debug!("command: {}", command);
 
-                let result = client
-                    .execute(&command)
-                    .await
-                    .expect("failed to send command");
+                let result = client.execute(&command).await?;
 
                 if result.exit_status != 0 {
                     warn!("non 0 receiver exit status: {:?}", result)
                 }
+
+                Ok::<(), async_ssh2_tokio::Error>(())
             });
 
-            tokio::spawn({
+            let display_handle = tokio::spawn({
                 let stats = stats.clone();
 
                 print_progress(stats)
             });
 
-            if sender {
-                debug!("running sender");
-
-                if let Err(error) = sender::main(options, stats).await {
-                    error!("sender failed: {:?}", error);
+            let main_future = async {
+                if sender {
+                    sender::main(options, stats).await
+                } else {
+                    receiver::main(options, stats).await
                 }
-            } else {
-                debug!("running receiver");
+            };
 
-                if let Err(error) = receiver::main(options, stats).await {
-                    error!("receiver failed: {:?}", error);
+            select! {
+                result = command_handle => {
+                    if let Ok(Err(error)) = result {
+                        error!("remote client failed: {}", error)
+                    }
+                },
+                _ = display_handle => {},
+                result = main_future => {
+                    info!("{} exited with result {:?}", if sender { "sender" } else { "receiver" }, result);
                 }
             }
-
-            // the remote command should have exited now
-            command_handle.await.expect("failed to join command");
         }
         Mode::RemoteSender => {
-            debug!("running sender");
-
             if let Err(error) = sender::main(options, stats).await {
                 error!("sender failed: {:?}", error);
             }
         }
         Mode::RemoteReceiver => {
-            debug!("running receiver");
-
             if let Err(error) = receiver::main(options, stats).await {
                 error!("receiver failed: {:?}", error);
             }
         }
     }
+
+    info!("exiting");
 }
 
 // opens the sockets that will be used to send data
@@ -512,10 +535,12 @@ async fn print_progress(stats: TransferStats) {
     let bar = ProgressBar::new(100);
     let mut interval = interval(Duration::from_secs(1));
 
-    bar.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta})")
-        .unwrap()
-        .progress_chars("=>-"));
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}% ({eta})")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
 
     loop {
         interval.tick().await;

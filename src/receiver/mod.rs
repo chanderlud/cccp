@@ -4,41 +4,23 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_channel::Receiver;
-use deadqueue::limited::Queue;
 use log::{debug, error, info, warn};
+use tokio::fs::rename;
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Mutex;
-use tokio::time::{interval, Instant};
+use tokio::time::{interval, sleep};
 
-use crate::receiver::metadata::MetaData;
+use crate::receiver::metadata::Metadata;
 use crate::receiver::writer::writer;
-use crate::{socket_factory, ByteQueue, Options, TransferStats, INDEX_SIZE, TRANSFER_BUFFER_SIZE};
+use crate::{
+    socket_factory, Options, Queue, Result, TransferStats, INDEX_SIZE, MAX_RETRIES,
+    TRANSFER_BUFFER_SIZE,
+};
 
 mod metadata;
 mod writer;
-
-type Result<T> = std::result::Result<T, ReceiveError>;
-
-#[derive(Debug)]
-pub(crate) struct ReceiveError {
-    _kind: ReceiveErrorKind,
-}
-
-#[derive(Debug)]
-enum ReceiveErrorKind {
-    IoError(io::Error),
-}
-
-impl From<io::Error> for ReceiveError {
-    fn from(error: io::Error) -> Self {
-        Self {
-            _kind: ReceiveErrorKind::IoError(error),
-        }
-    }
-}
 
 pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<()> {
     if options.destination.file_path.is_dir() {
@@ -56,13 +38,15 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
     stats.total_data.store(file_size as usize, Relaxed);
     debug!("received manifest: {}", file_size);
 
-    let meta_data = MetaData::new(&options.destination.file_path).await?;
+    let meta_data = Metadata::new(&options.destination.file_path).await?;
     stats
         .confirmed_data
-        .fetch_add(meta_data.indexes.len() * TRANSFER_BUFFER_SIZE, Relaxed);
+        .fetch_add(meta_data.initial_index as usize, Relaxed);
 
-    debug!("sending {} completed indexes", meta_data.indexes.len());
-    send_indexes(&mut socket, &meta_data.indexes).await?;
+    debug!("sending start index {}", meta_data.initial_index);
+    socket
+        .write_all(&meta_data.initial_index.to_be_bytes())
+        .await?;
 
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
@@ -74,20 +58,20 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 
     info!("opened sockets");
 
-    let queue = Arc::new(Queue::new(10_000));
-    let (confirmation_sender, confirmation_receiver) = async_channel::unbounded();
+    let writer_queue: Queue<Vec<u8>> = Default::default();
+    let confirmation_queue: Queue<u64> = Default::default();
 
     let writer_handle = tokio::spawn(writer(
-        options.destination.file_path,
-        queue.clone(),
+        options.destination.file_path.with_extension("partial"),
+        writer_queue.clone(),
         file_size,
-        confirmation_sender,
+        confirmation_queue.clone(),
         meta_data,
     ));
 
-    let confirmation_handle = tokio::spawn(async {
+    tokio::spawn(async {
         if let Err(error) =
-            send_confirmations(socket, confirmation_receiver, stats.confirmed_data).await
+            send_confirmations(socket, confirmation_queue, stats.confirmed_data).await
         {
             error!("confirmation sender failed: {}", error);
         }
@@ -95,43 +79,45 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 
     let _: Vec<_> = sockets
         .into_iter()
-        .map(|socket| tokio::spawn(receiver(queue.clone(), socket)))
+        .map(|socket| tokio::spawn(receiver(writer_queue.clone(), socket)))
         .collect();
-
-    let now = Instant::now();
 
     let writer_result = writer_handle.await;
     info!("writer finished with result {:?}", writer_result);
 
-    debug!("waiting for confirmation sender to finish");
-    if let Err(error) = confirmation_handle.await {
-        error!("confirmation sender exited with error: {}", error);
-    }
-
-    let elapsed = now.elapsed().as_secs();
-    let speed = file_size as f64 / elapsed as f64 / 1_000_000_f64;
-    info!(
-        "received {} bytes in {} seconds ({} MB/s)",
-        file_size, elapsed, speed
-    );
+    // rename the partial file to the original file
+    rename(
+        &options.destination.file_path.with_extension("partial"),
+        &options.destination.file_path,
+    )
+    .await?;
 
     Ok(())
 }
 
-pub(crate) async fn receiver(queue: ByteQueue, socket: UdpSocket) {
-    let mut buf = [0; 4 + INDEX_SIZE + TRANSFER_BUFFER_SIZE];
+pub(crate) async fn receiver(queue: Queue<Vec<u8>>, socket: UdpSocket) {
+    let mut buf = [0; INDEX_SIZE + TRANSFER_BUFFER_SIZE];
+    let mut retries = 0;
 
     loop {
         match socket.recv(&mut buf).await {
             Ok(read) => {
+                retries = 0;
+
                 if read > 0 {
-                    queue.push(buf[..read].to_vec()).await;
+                    queue.push(buf[..read].to_vec());
                 } else {
                     warn!("0 byte read?");
                 }
             }
             Err(error) => {
-                error!("receiver error {}", error);
+                error!("failed to receive data {}", error);
+
+                if retries < MAX_RETRIES {
+                    retries += 1;
+                } else {
+                    break;
+                }
             }
         }
     }
@@ -152,7 +138,7 @@ async fn receive_manifest(port: u16) -> io::Result<(u64, TcpStream)> {
 
 async fn send_confirmations(
     mut socket: TcpStream,
-    queue: Receiver<u64>,
+    queue: Queue<u64>,
     confirmed_data: Arc<AtomicUsize>,
 ) -> io::Result<()> {
     let data: Arc<Mutex<Vec<u64>>> = Default::default();
@@ -172,18 +158,21 @@ async fn send_confirmations(
                     continue;
                 }
 
-                let taken_vec = mem::take(&mut *data);
-                send_indexes(&mut socket, &taken_vec).await.unwrap();
+                let indexes = mem::take(&mut *data);
+
+                if let Err(error) = send_indexes(&mut socket, &indexes).await {
+                    error!("failed to send indexes: {}", error);
+                    sleep(Duration::from_millis(10)).await;
+                }
             }
         }
     });
 
-    while let Ok(index) = queue.recv().await {
+    loop {
+        let index = queue.pop().await;
         confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed);
         data.lock().await.push(index);
     }
-
-    Ok(())
 }
 
 // sends an array of indexes to the socket
