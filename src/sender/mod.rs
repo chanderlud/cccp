@@ -41,11 +41,8 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
 
     let mut socket = send_manifest(remote_address, options.start_port, file_size).await?;
 
-    let mut buf = [0; 8];
-    socket.read_exact(&mut buf).await?;
-    let start_index = u64::from_be_bytes(buf);
+    let start_index = socket.read_u64().await?;
     stats.confirmed_data.store(start_index as usize, Relaxed);
-
     debug!("received start index {}", start_index);
 
     let sockets = socket_factory(
@@ -152,7 +149,7 @@ async fn send_manifest(remote_address: IpAddr, port: u16, length: u64) -> io::Re
 
     let mut socket = TcpStream::connect((remote_address, port)).await?;
 
-    socket.write_all(&length.to_be_bytes()).await?;
+    socket.write_u64(length).await?;
 
     Ok(socket)
 }
@@ -246,35 +243,19 @@ async fn add_leases_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
 }
 
 async fn receive_indexes(socket: &mut TcpStream) -> io::Result<Vec<u64>> {
-    let mut buffer = Vec::new();
-    let mut length_buffer = [0; 8];
-
-    socket.read_exact(&mut length_buffer).await?;
-    let length = u64::from_be_bytes(length_buffer) as usize;
+    let length = socket.read_u64().await? as usize;
 
     if length == 0 {
-        debug!("received empty array of indexes");
         return Ok(Vec::new());
     }
 
-    // resize the buffer to hold all u64 values
-    buffer.resize(length * 8, 0);
+    let mut buffer = vec![0; length * 8]; // 8 bytes per u64 value
 
-    // read the array of u64 values
+    // read u64 values
     socket.read_exact(&mut buffer).await?;
 
-    Ok((0..length)
-        .map(|i| {
-            u64::from_be_bytes([
-                buffer[i * 8],
-                buffer[i * 8 + 1],
-                buffer[i * 8 + 2],
-                buffer[i * 8 + 3],
-                buffer[i * 8 + 4],
-                buffer[i * 8 + 5],
-                buffer[i * 8 + 6],
-                buffer[i * 8 + 7],
-            ])
-        })
+    Ok(buffer
+        .chunks(8)
+        .map(|chunk| u64::from_be_bytes(chunk.try_into().unwrap()))
         .collect())
 }

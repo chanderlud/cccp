@@ -44,9 +44,7 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
         .fetch_add(meta_data.initial_index as usize, Relaxed);
 
     debug!("sending start index {}", meta_data.initial_index);
-    socket
-        .write_all(&meta_data.initial_index.to_be_bytes())
-        .await?;
+    socket.write_u64(meta_data.initial_index).await?;
 
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
@@ -130,10 +128,7 @@ async fn receive_manifest(port: u16) -> io::Result<(u64, TcpStream)> {
 
     let (mut stream, _remote_addr) = listener.accept().await?;
 
-    let mut buf = [0; 8];
-    stream.read_exact(&mut buf).await?;
-
-    Ok((u64::from_be_bytes(buf), stream))
+    Ok((stream.read_u64().await?, stream))
 }
 
 async fn send_confirmations(
@@ -178,11 +173,11 @@ async fn send_confirmations(
 // sends an array of indexes to the socket
 async fn send_indexes(socket: &mut TcpStream, data: &[u64]) -> io::Result<()> {
     let length = data.len() as u64;
-    socket.write_all(&length.to_be_bytes()).await?;
+    socket.write_u64(length).await?;
 
     // send the array of u64 values
     for value in data {
-        socket.write_all(&value.to_be_bytes()).await?;
+        socket.write_u64(*value).await?;
     }
 
     Ok(())
