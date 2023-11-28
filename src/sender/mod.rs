@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashSet};
-use std::net::IpAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -39,9 +38,13 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     // give the receiver time to start listening
     sleep(Duration::from_millis(1_000)).await;
 
-    let mut socket = send_manifest(remote_address, options.start_port, file_size).await?;
+    // connect to the remote client on the first port in the range
+    let mut control_stream = TcpStream::connect((remote_address, options.start_port)).await?;
+    // send the file size to the remote client
+    control_stream.write_u64(file_size).await?;
 
-    let start_index = socket.read_u64().await?;
+    // receive the start index from the remote client
+    let start_index = control_stream.read_u64().await?;
     stats.confirmed_data.store(start_index as usize, Relaxed);
     debug!("received start index {}", start_index);
 
@@ -77,11 +80,11 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
         let queue = queue.clone();
         let read = read.clone();
 
-        receive_confirmations(socket, cache, queue, stats.confirmed_data, read)
+        receive_confirmations(control_stream, cache, queue, stats.confirmed_data, read)
     });
 
     let semaphore = send.clone();
-    tokio::spawn(add_leases_at_rate(semaphore, options.rate));
+    tokio::spawn(add_permits_at_rate(semaphore, options.rate));
 
     let handles: Vec<_> = sockets
         .into_iter()
@@ -109,7 +112,8 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
         _ = reader_future => {},
         _ = sender_future => { warn!("senders exited") },
         result = confirmation_handle => {
-            info!("confirmation sender exited with result {:?}", result);
+            // the confirmation receiver never exits unless an error occurs
+            error!("confirmation receiver exited with result {:?}", result);
         }
     }
 
@@ -131,6 +135,7 @@ async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<S
             if retries < MAX_RETRIES {
                 retries += 1;
             } else {
+                error!("sender: too many retries, exiting");
                 break;
             }
         } else {
@@ -144,18 +149,8 @@ async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<S
     }
 }
 
-async fn send_manifest(remote_address: IpAddr, port: u16, length: u64) -> io::Result<TcpStream> {
-    info!("sending manifest to {}:{}", remote_address, port);
-
-    let mut socket = TcpStream::connect((remote_address, port)).await?;
-
-    socket.write_u64(length).await?;
-
-    Ok(socket)
-}
-
 async fn receive_confirmations(
-    mut socket: TcpStream,
+    mut control_stream: TcpStream,
     cache: JobCache,
     queue: JobQueue,
     confirmed_data: Arc<AtomicUsize>,
@@ -206,9 +201,9 @@ async fn receive_confirmations(
     });
 
     loop {
-        socket.flush().await?;
+        control_stream.flush().await?;
 
-        let confirmed_indexes = receive_indexes(&mut socket).await?;
+        let confirmed_indexes = receive_indexes(&mut control_stream).await?;
         let length = confirmed_indexes.len();
 
         confirmed_data.fetch_add(length * TRANSFER_BUFFER_SIZE, Relaxed);
@@ -228,7 +223,7 @@ async fn receive_confirmations(
 }
 
 // adds leases to the semaphore at a given rate to control the send rate
-async fn add_leases_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
+async fn add_permits_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
     let mut interval = interval(Duration::from_nanos(1_000_000_000 / rate));
 
     loop {
@@ -242,8 +237,8 @@ async fn add_leases_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
     }
 }
 
-async fn receive_indexes(socket: &mut TcpStream) -> io::Result<Vec<u64>> {
-    let length = socket.read_u64().await? as usize;
+async fn receive_indexes(control_stream: &mut TcpStream) -> io::Result<Vec<u64>> {
+    let length = control_stream.read_u64().await? as usize; // read the length of the array
 
     if length == 0 {
         return Ok(Vec::new());
@@ -252,8 +247,9 @@ async fn receive_indexes(socket: &mut TcpStream) -> io::Result<Vec<u64>> {
     let mut buffer = vec![0; length * 8]; // 8 bytes per u64 value
 
     // read u64 values
-    socket.read_exact(&mut buffer).await?;
+    control_stream.read_exact(&mut buffer).await?;
 
+    // convert the buffer into an array of u64 values
     Ok(buffer
         .chunks(8)
         .map(|chunk| u64::from_be_bytes(chunk.try_into().unwrap()))

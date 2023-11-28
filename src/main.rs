@@ -334,6 +334,8 @@ async fn main() {
             port_count, options.threads, port_count
         );
         options.threads = port_count;
+    } else if port_count < 2 {
+        panic!("a minimum of two ports are required")
     }
 
     if options.destination.host.is_none() && options.source.host.is_none() {

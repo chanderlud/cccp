@@ -34,17 +34,22 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 
     info!("receiving {} -> {}", options.source, options.destination);
 
-    let (file_size, mut socket) = receive_manifest(options.start_port).await?;
-    stats.total_data.store(file_size as usize, Relaxed);
-    debug!("received manifest: {}", file_size);
-
     let meta_data = Metadata::new(&options.destination.file_path).await?;
     stats
         .confirmed_data
         .fetch_add(meta_data.initial_index as usize, Relaxed);
 
+    let listener = TcpListener::bind(("0.0.0.0", options.start_port)).await?;
+    let (mut control_stream, _remote_addr) = listener.accept().await?;
+
+    // receive the file size from the remote client
+    let file_size = control_stream.read_u64().await?;
+    stats.total_data.store(file_size as usize, Relaxed);
+    debug!("received file size: {}", file_size);
+
+    // send the start index to the remote client
     debug!("sending start index {}", meta_data.initial_index);
-    socket.write_u64(meta_data.initial_index).await?;
+    control_stream.write_u64(meta_data.initial_index).await?;
 
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
@@ -69,7 +74,7 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 
     tokio::spawn(async {
         if let Err(error) =
-            send_confirmations(socket, confirmation_queue, stats.confirmed_data).await
+            send_confirmations(control_stream, confirmation_queue, stats.confirmed_data).await
         {
             error!("confirmation sender failed: {}", error);
         }
@@ -121,18 +126,8 @@ pub(crate) async fn receiver(queue: Queue<Vec<u8>>, socket: UdpSocket) {
     }
 }
 
-async fn receive_manifest(port: u16) -> io::Result<(u64, TcpStream)> {
-    info!("listening for manifest on 0.0.0.0:{}", port);
-
-    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
-
-    let (mut stream, _remote_addr) = listener.accept().await?;
-
-    Ok((stream.read_u64().await?, stream))
-}
-
 async fn send_confirmations(
-    mut socket: TcpStream,
+    mut control_stream: TcpStream,
     queue: Queue<u64>,
     confirmed_data: Arc<AtomicUsize>,
 ) -> io::Result<()> {
@@ -155,7 +150,7 @@ async fn send_confirmations(
 
                 let indexes = mem::take(&mut *data);
 
-                if let Err(error) = send_indexes(&mut socket, &indexes).await {
+                if let Err(error) = send_indexes(&mut control_stream, &indexes).await {
                     error!("failed to send indexes: {}", error);
                     sleep(Duration::from_millis(10)).await;
                 }
@@ -171,13 +166,13 @@ async fn send_confirmations(
 }
 
 // sends an array of indexes to the socket
-async fn send_indexes(socket: &mut TcpStream, data: &[u64]) -> io::Result<()> {
+async fn send_indexes(control_stream: &mut TcpStream, data: &[u64]) -> io::Result<()> {
     let length = data.len() as u64;
-    socket.write_u64(length).await?;
+    control_stream.write_u64(length).await?;
 
     // send the array of u64 values
     for value in data {
-        socket.write_u64(*value).await?;
+        control_stream.write_u64(*value).await?;
     }
 
     Ok(())
