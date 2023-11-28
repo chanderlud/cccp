@@ -11,6 +11,7 @@ pub(crate) struct Metadata {
 }
 
 impl Metadata {
+    /// initialize the metadata object
     pub(crate) async fn new(file_path: &Path) -> io::Result<Self> {
         let file_path = Self::format_path(file_path);
 
@@ -30,7 +31,17 @@ impl Metadata {
         })
     }
 
-    // load metadata from file
+    /// complete an index
+    pub(crate) async fn complete(&mut self, index: u64) -> io::Result<()> {
+        self.writer.write_u64(index).await // write index to file
+    }
+
+    /// remove metadata file
+    pub(crate) async fn remove(&self) -> io::Result<()> {
+        remove_file(&self.file_path).await
+    }
+
+    /// load metadata from file
     async fn load(file_path: &Path) -> io::Result<Self> {
         let file_path = Self::format_path(file_path);
 
@@ -57,16 +68,7 @@ impl Metadata {
         })
     }
 
-    // complete an index
-    pub(crate) async fn complete(&mut self, index: u64) -> io::Result<()> {
-        self.writer.write_u64(index).await // write index to file
-    }
-
-    // remove metadata file
-    pub(crate) async fn remove(&self) -> io::Result<()> {
-        remove_file(&self.file_path).await
-    }
-
+    /// formats the path to the metadata file
     #[inline]
     fn format_path(path: &Path) -> PathBuf {
         path.with_extension("metadata")
