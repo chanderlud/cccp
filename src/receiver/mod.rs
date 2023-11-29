@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use log::{debug, error, info, warn};
 use tokio::fs::rename;
-use tokio::{io, select};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::{interval, timeout};
+use tokio::time::{interval, sleep, timeout};
+use tokio::{io, select};
 
 use crate::receiver::metadata::Metadata;
 use crate::receiver::writer::writer;
@@ -22,6 +22,8 @@ use crate::{
 
 mod metadata;
 mod writer;
+
+type WriterQueue = Arc<deadqueue::limited::Queue<Vec<u8>>>;
 
 pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<()> {
     if options.destination.file_path.is_dir() {
@@ -62,7 +64,7 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 
     info!("opened sockets");
 
-    let writer_queue: Queue<Vec<u8>> = Default::default();
+    let writer_queue: WriterQueue = Arc::new(deadqueue::limited::Queue::new(100));
     let confirmation_queue: Queue<u64> = Default::default();
 
     let writer_handle = tokio::spawn(writer(
@@ -73,12 +75,23 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
         meta_data,
     ));
 
-    let confirmation_handle = tokio::spawn(
-        send_confirmations(
-            control_stream,
-            confirmation_queue,
-            stats.confirmed_data)
-    );
+    let confirmation_handle = tokio::spawn({
+        let writer_queue = writer_queue.clone();
+
+        async move {
+            let result = send_confirmations(
+                control_stream,
+                confirmation_queue,
+                stats.confirmed_data,
+            ).await;
+
+            while !writer_queue.is_empty() {
+                sleep(Duration::from_secs(1)).await;
+            }
+
+            result
+        }
+    });
 
     let handles: Vec<_> = sockets
         .into_iter()
@@ -87,10 +100,12 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 
     let receiver_future = async {
         for handle in handles {
-            handle.await?;
+            _ = handle.await;
         }
 
-        Ok::<(), io::Error>(())
+        while !writer_queue.is_empty() {
+            sleep(Duration::from_secs(1)).await;
+        }
     };
 
     select! {
@@ -105,13 +120,13 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
             )
             .await?;
         },
-        receiver_future = receiver_future => error!("receiver(s) failed {:?}", receiver_future),
+        _ = receiver_future => info!("receiver(s) exited"),
     }
 
     Ok(())
 }
 
-pub(crate) async fn receiver(queue: Queue<Vec<u8>>, socket: UdpSocket) {
+pub(crate) async fn receiver(queue: WriterQueue, socket: UdpSocket) {
     let mut buf = [0; INDEX_SIZE + TRANSFER_BUFFER_SIZE];
     let mut retries = 0;
 
@@ -122,7 +137,7 @@ pub(crate) async fn receiver(queue: Queue<Vec<u8>>, socket: UdpSocket) {
                     retries = 0;
 
                     if read > 0 {
-                        queue.push(buf[..read].to_vec());
+                        queue.push(buf[..read].to_vec()).await;
                     } else {
                         warn!("0 byte read?");
                     }

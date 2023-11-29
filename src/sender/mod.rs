@@ -186,12 +186,11 @@ async fn receive_confirmations(
                 let mut cache = cache.write().await;
 
                 // requeue and remove entries
-                for key in keys_to_remove {
-                    if let Some(mut unconfirmed) = cache.remove(&key) {
-                        if lost_confirmations.contains(&key) {
+                for index in keys_to_remove {
+                    if let Some(mut unconfirmed) = cache.remove(&index) {
+                        if lost_confirmations.contains(&index) {
                             // the job is not requeued because it was confirmed while outside the cache
-                            debug!("found lost confirmation for {}", key);
-                            lost_confirmations.remove(&key);
+                            lost_confirmations.remove(&index);
                         } else {
                             unconfirmed.cached_at = None;
                             queue.push(unconfirmed);

@@ -8,11 +8,12 @@ use tokio::fs::OpenOptions;
 use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::receiver::metadata::Metadata;
+use crate::receiver::WriterQueue;
 use crate::{Queue, INDEX_SIZE, TRANSFER_BUFFER_SIZE};
 
 pub(crate) async fn writer(
     path: PathBuf,
-    writer_queue: Queue<Vec<u8>>,
+    writer_queue: WriterQueue,
     file_size: u64,
     confirmation_queue: Queue<u64>,
     mut metadata: Metadata,

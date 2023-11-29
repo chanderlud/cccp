@@ -1,4 +1,3 @@
-use std::{error, process};
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -7,6 +6,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{error, process};
 
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
 use clap::Parser;
@@ -317,6 +317,7 @@ async fn main() {
     let mut options = Options::parse();
 
     // TODO choose a better log file location
+    // local client should log in execution location
     simple_logging::log_to_file("cccp.log", options.log_level).expect("failed to log");
 
     if options.start_port > options.end_port {
