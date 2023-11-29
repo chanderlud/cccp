@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::select;
@@ -93,8 +93,10 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
 
     let sender_future = async {
         for handle in handles {
-            let _ = handle.await;
+            handle.await?;
         }
+
+        Ok::<(), io::Error>(())
     };
 
     let reader_future = async {
@@ -110,7 +112,7 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
 
     select! {
         _ = reader_future => {},
-        _ = sender_future => { warn!("senders exited") },
+        result = sender_future => error!("sender(s) failed {:?}", result),
         result = confirmation_handle => {
             // the confirmation receiver never exits unless an error occurs
             error!("confirmation receiver exited with result {:?}", result);
