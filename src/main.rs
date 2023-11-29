@@ -1,4 +1,4 @@
-use std::error;
+use std::{error, process};
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -130,19 +130,16 @@ impl Options {
     fn format_command(&self, sender: bool) -> String {
         let mode = if sender { "rr" } else { "rs" };
 
-        let escaped_source = self.source.to_string().replace(' ', "\\ ");
-        let escaped_destination = self.destination.to_string().replace(' ', "\\ ");
-
         format!(
-            "cccp --mode {} --start-port {} --end-port {} --threads {} --log-level {} --rate {} {} {}",
+            "cccp --mode {} --start-port {} --end-port {} --threads {} --log-level {} --rate {} \"{}\" \"{}\"",
             mode,
             self.start_port,
             self.end_port,
             self.threads,
             self.log_level,
             self.rate,
-            escaped_source,
-            escaped_destination
+            self.source,
+            self.destination
         )
     }
 }
@@ -479,11 +476,13 @@ async fn main() {
         Mode::RemoteSender => {
             if let Err(error) = sender::main(options, stats).await {
                 error!("sender failed: {:?}", error);
+                process::exit(1); // exit with non 0 status so remote knows it failed
             }
         }
         Mode::RemoteReceiver => {
             if let Err(error) = receiver::main(options, stats).await {
                 error!("receiver failed: {:?}", error);
+                process::exit(1); // exit with non 0 status so remote knows it failed
             }
         }
     }
