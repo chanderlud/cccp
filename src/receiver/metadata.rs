@@ -57,21 +57,17 @@ impl Metadata {
         // seek to the end of the file
         let len = file.seek(SeekFrom::End(0)).await?;
 
-        // if the file is not empty, seek back 8 bytes from the end and read the last index
-        let index = if len > 0 {
-            let mut buf = [0; 8]; // create buffer for data
+        let mut buf = [0; 8]; // create buffer for data
 
+        // if the file is not empty, seek back 8 bytes from the end and read the last index
+        if len > 0 {
             file.seek(SeekFrom::End(-8)).await?;
             file.read_exact(&mut buf).await?;
-
-            u64::from_be_bytes(buf)
-        } else {
-            0
-        };
+        }
 
         // return a new instance of the Metadata struct
         Ok(Self {
-            initial_index: index,
+            initial_index: u64::from_be_bytes(buf),
             writer: file,
             file_path,
         })
