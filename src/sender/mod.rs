@@ -68,7 +68,7 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     // a semaphore which limits the number of jobs that the reader will add to the queue
     let read = Arc::new(Semaphore::new(1_000));
 
-    let reader_handle = tokio::spawn(reader::reader(
+    tokio::spawn(reader::reader(
         options.source.file_path,
         queue.clone(),
         read.clone(),
@@ -93,26 +93,24 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
 
     let sender_future = async {
         for handle in handles {
-            handle.await?;
+            _ = handle.await;
         }
-
-        Ok::<(), io::Error>(())
     };
 
-    let reader_future = async {
-        _ = reader_handle.await;
-        info!("reader exited");
-
-        while !queue.is_empty() && !cache.read().await.is_empty() {
-            sleep(Duration::from_secs(1)).await;
-        }
-
-        info!("the queue and cache emptied, so hopefully all the data was sent");
-    };
+    // let reader_future = async {
+    //     _ = reader_handle.await;
+    //     info!("reader exited");
+    //
+    //     while !queue.is_empty() && !cache.read().await.is_empty() {
+    //         sleep(Duration::from_secs(1)).await;
+    //     }
+    //
+    //     info!("the queue and cache emptied, so hopefully all the data was sent");
+    // };
 
     select! {
-        _ = reader_future => {},
-        result = sender_future => error!("sender(s) failed {:?}", result),
+        // _ = reader_future => {},
+        _ = sender_future => error!("senders exited"),
         result = confirmation_handle => {
             // the confirmation receiver never exits unless an error occurs
             error!("confirmation receiver exited with result {:?}", result);
@@ -126,8 +124,8 @@ async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<S
     let mut retries = 0;
 
     loop {
-        let mut job = queue.pop().await; // get the next job
         let permit = send.acquire().await.unwrap(); // acquire a permit
+        let mut job = queue.pop().await; // get the next job
 
         // send the job data to the socket
         if let Err(error) = socket.send(&job.data).await {

@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::{interval, sleep, timeout};
+use tokio::time::{interval, timeout};
 use tokio::{io, select};
 
 use crate::receiver::metadata::Metadata;
@@ -75,23 +75,11 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
         meta_data,
     ));
 
-    let confirmation_handle = tokio::spawn({
-        let writer_queue = writer_queue.clone();
-
-        async move {
-            let result = send_confirmations(
-                control_stream,
-                confirmation_queue,
-                stats.confirmed_data,
-            ).await;
-
-            while !writer_queue.is_empty() {
-                sleep(Duration::from_secs(1)).await;
-            }
-
-            result
-        }
-    });
+    let confirmation_handle = tokio::spawn(send_confirmations(
+        control_stream,
+        confirmation_queue,
+        stats.confirmed_data,
+    ));
 
     let handles: Vec<_> = sockets
         .into_iter()
@@ -101,10 +89,6 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
     let receiver_future = async {
         for handle in handles {
             _ = handle.await;
-        }
-
-        while !writer_queue.is_empty() {
-            sleep(Duration::from_secs(1)).await;
         }
     };
 
