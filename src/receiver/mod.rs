@@ -21,7 +21,14 @@ use crate::{socket_factory, LimitedQueue, Options, Result, TransferStats, Unlimi
 mod metadata;
 mod writer;
 
-type WriterQueue = LimitedQueue<Vec<u8>>;
+type WriterQueue = LimitedQueue<Job>;
+
+#[derive(Clone)]
+struct Job {
+    data: [u8; TRANSFER_BUFFER_SIZE], // the file chunk
+    index: u64,                       // the index of the file chunk
+    len: usize,                       // the length of the file chunk
+}
 
 pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<()> {
     if options.destination.file_path.is_dir() {
@@ -108,40 +115,23 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
     Ok(())
 }
 
-pub(crate) async fn receiver(queue: WriterQueue, socket: UdpSocket) {
+async fn receiver(queue: WriterQueue, socket: UdpSocket) {
     let mut buf = [0; INDEX_SIZE + TRANSFER_BUFFER_SIZE];
     let mut retries = 0;
 
-    loop {
+    while retries < MAX_RETRIES {
         match timeout(RECEIVE_TIMEOUT, socket.recv(&mut buf)).await {
-            Ok(recv_result) => match recv_result {
-                Ok(read) => {
-                    retries = 0;
-
-                    if read > 0 {
-                        queue.push(buf[..read].to_vec()).await;
-                    } else {
-                        warn!("0 byte read?");
-                    }
-                }
-                Err(error) => {
-                    error!("failed to receive data {}", error);
-
-                    if retries < MAX_RETRIES {
-                        retries += 1;
-                    } else {
-                        break;
-                    }
-                }
-            },
-            Err(_timeout) => {
-                error!("recv timed out");
-
-                if retries < MAX_RETRIES {
-                    retries += 1;
-                } else {
-                    break;
-                }
+            Ok(Ok(read)) if read > 0 => {
+                retries = 0;
+                let data = buf[INDEX_SIZE..].try_into().unwrap();
+                let index = u64::from_be_bytes(buf[..INDEX_SIZE].try_into().unwrap());
+                let len = read - INDEX_SIZE;
+                queue.push(Job { data, index, len }).await;
+            }
+            Ok(Ok(_)) => warn!("0 byte read?"),
+            Ok(Err(error)) | Err(error) => {
+                error!("failed to receive data {}", error);
+                retries += 1;
             }
         }
     }
