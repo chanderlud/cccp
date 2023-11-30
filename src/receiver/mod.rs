@@ -64,7 +64,7 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 
     info!("opened sockets");
 
-    let writer_queue: WriterQueue = Arc::new(deadqueue::limited::Queue::new(100));
+    let writer_queue: WriterQueue = Arc::new(deadqueue::limited::Queue::new(1_000));
     let confirmation_queue: Queue<u64> = Default::default();
 
     let writer_handle = tokio::spawn(writer(
@@ -172,6 +172,8 @@ async fn send_confirmations(
                 }
 
                 let indexes = mem::take(&mut *data);
+                drop(data);
+
                 send_indexes(&mut control_stream, &indexes).await?;
             }
         }
