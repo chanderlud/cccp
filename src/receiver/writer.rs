@@ -9,13 +9,13 @@ use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::receiver::metadata::Metadata;
 use crate::receiver::WriterQueue;
-use crate::{Queue, INDEX_SIZE, TRANSFER_BUFFER_SIZE};
+use crate::{UnlimitedQueue, INDEX_SIZE, TRANSFER_BUFFER_SIZE};
 
 pub(crate) async fn writer(
     path: PathBuf,
     writer_queue: WriterQueue,
     file_size: u64,
-    confirmation_queue: Queue<u64>,
+    confirmation_queue: UnlimitedQueue<u64>,
     mut metadata: Metadata,
 ) -> io::Result<()> {
     let mut writer = OpenOptions::new()

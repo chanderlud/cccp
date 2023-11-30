@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
+use deadqueue::limited::Queue;
 use log::{debug, error, info, warn};
 use tokio::fs::rename;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,15 +16,12 @@ use tokio::{io, select};
 
 use crate::receiver::metadata::Metadata;
 use crate::receiver::writer::writer;
-use crate::{
-    socket_factory, Options, Queue, Result, TransferStats, INDEX_SIZE, MAX_RETRIES,
-    TRANSFER_BUFFER_SIZE,
-};
+use crate::{socket_factory, LimitedQueue, Options, Result, TransferStats, UnlimitedQueue, INDEX_SIZE, MAX_RETRIES, TRANSFER_BUFFER_SIZE, RECEIVE_TIMEOUT};
 
 mod metadata;
 mod writer;
 
-type WriterQueue = Arc<deadqueue::limited::Queue<Vec<u8>>>;
+type WriterQueue = LimitedQueue<Vec<u8>>;
 
 pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<()> {
     if options.destination.file_path.is_dir() {
@@ -57,15 +55,15 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
         options.end_port,
-        options.source.host.unwrap().as_str().parse().unwrap(),
+        options.source.host.unwrap().as_str().parse()?,
         options.threads,
     )
     .await?;
 
     info!("opened sockets");
 
-    let writer_queue: WriterQueue = Arc::new(deadqueue::limited::Queue::new(1_000));
-    let confirmation_queue: Queue<u64> = Default::default();
+    let writer_queue: WriterQueue = Arc::new(Queue::new(1_000));
+    let confirmation_queue: UnlimitedQueue<u64> = Default::default();
 
     let writer_handle = tokio::spawn(writer(
         options.destination.file_path.with_extension("partial"),
@@ -115,7 +113,7 @@ pub(crate) async fn receiver(queue: WriterQueue, socket: UdpSocket) {
     let mut retries = 0;
 
     loop {
-        match timeout(Duration::from_secs(5), socket.recv(&mut buf)).await {
+        match timeout(RECEIVE_TIMEOUT, socket.recv(&mut buf)).await {
             Ok(recv_result) => match recv_result {
                 Ok(read) => {
                     retries = 0;
@@ -151,7 +149,7 @@ pub(crate) async fn receiver(queue: WriterQueue, socket: UdpSocket) {
 
 async fn send_confirmations(
     mut control_stream: TcpStream,
-    queue: Queue<u64>,
+    queue: UnlimitedQueue<u64>,
     confirmed_data: Arc<AtomicUsize>,
 ) -> io::Result<()> {
     let data: Arc<Mutex<Vec<u64>>> = Default::default();

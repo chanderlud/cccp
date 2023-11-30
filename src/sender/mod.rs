@@ -12,13 +12,13 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{interval, sleep, Instant};
 
 use crate::{
-    socket_factory, Options, Queue, Result, TransferStats, MAX_RETRIES, REQUEUE_INTERVAL,
+    socket_factory, Options, Result, TransferStats, UnlimitedQueue, MAX_RETRIES, REQUEUE_INTERVAL,
     TRANSFER_BUFFER_SIZE,
 };
 
 mod reader;
 
-type JobQueue = Queue<Job>;
+type JobQueue = UnlimitedQueue<Job>;
 type JobCache = Arc<RwLock<BTreeMap<u64, Job>>>;
 
 #[derive(Clone)]

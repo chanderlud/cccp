@@ -25,13 +25,16 @@ use tokio::{io, select};
 mod receiver;
 mod sender;
 
-type Queue<T> = Arc<deadqueue::unlimited::Queue<T>>;
+type UnlimitedQueue<T> = Arc<deadqueue::unlimited::Queue<T>>;
+type LimitedQueue<T> = Arc<deadqueue::limited::Queue<T>>;
 type Result<T> = std::result::Result<T, Error>;
 
 const READ_BUFFER_SIZE: usize = 10_000_000;
 const TRANSFER_BUFFER_SIZE: usize = 1024;
 const INDEX_SIZE: usize = std::mem::size_of::<u64>();
 const MAX_RETRIES: usize = 10;
+const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
+
 // how long to wait for a job to be confirmed before requeuing it
 const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
 
