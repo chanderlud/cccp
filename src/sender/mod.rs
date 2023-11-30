@@ -21,8 +21,7 @@ mod reader;
 type JobQueue = UnlimitedQueue<Job>;
 type JobCache = Arc<RwLock<BTreeMap<u64, Job>>>;
 
-#[derive(Clone)]
-pub(crate) struct Job {
+struct Job {
     data: Vec<u8>, // index (8 bytes) + the file chunk
     index: u64,    // the index of the file chunk
     cached_at: Option<Instant>,
@@ -123,7 +122,7 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
 async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<Semaphore>) {
     let mut retries = 0;
 
-    loop {
+    while retries < MAX_RETRIES {
         let permit = send.acquire().await.unwrap(); // acquire a permit
         let mut job = queue.pop().await; // get the next job
 
@@ -131,13 +130,7 @@ async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<S
         if let Err(error) = socket.send(&job.data).await {
             error!("failed to send data: {}", error);
             queue.push(job); // put the job back in the queue
-
-            if retries < MAX_RETRIES {
-                retries += 1;
-            } else {
-                error!("sender: too many retries, exiting");
-                break;
-            }
+            retries += 1;
         } else {
             // cache the job
             job.cached_at = Some(Instant::now());
