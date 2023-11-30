@@ -16,7 +16,10 @@ use tokio::{io, select};
 
 use crate::receiver::metadata::Metadata;
 use crate::receiver::writer::writer;
-use crate::{socket_factory, LimitedQueue, Options, Result, TransferStats, UnlimitedQueue, INDEX_SIZE, MAX_RETRIES, TRANSFER_BUFFER_SIZE, RECEIVE_TIMEOUT};
+use crate::{
+    socket_factory, LimitedQueue, Options, Result, TransferStats, UnlimitedQueue, INDEX_SIZE,
+    MAX_RETRIES, RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
+};
 
 mod metadata;
 mod writer;
@@ -129,10 +132,7 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) {
                 queue.push(Job { data, index, len }).await;
             }
             Ok(Ok(_)) => warn!("0 byte read?"),
-            Ok(Err(error)) | Err(error) => {
-                error!("failed to receive data {}", error);
-                retries += 1;
-            }
+            Ok(Err(_)) | Err(_) => retries += 1,
         }
     }
 }
