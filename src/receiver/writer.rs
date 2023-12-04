@@ -5,31 +5,26 @@ use std::path::PathBuf;
 
 use log::{debug, info};
 use tokio::fs::OpenOptions;
-use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufWriter};
 
-use crate::receiver::metadata::Metadata;
 use crate::receiver::{Job, WriterQueue};
-use crate::{UnlimitedQueue, TRANSFER_BUFFER_SIZE};
+use crate::{UnlimitedQueue, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
 
 pub(crate) async fn writer(
     path: PathBuf,
     writer_queue: WriterQueue,
     file_size: u64,
     confirmation_queue: UnlimitedQueue<u64>,
-    mut metadata: Metadata,
+    mut position: u64,
 ) -> io::Result<()> {
-    let mut writer = OpenOptions::new()
+    let file = OpenOptions::new()
         .write(true)
         .create(true)
         .open(path)
         .await?;
 
-    let mut position = metadata.initial_index;
-
-    if position > 0 {
-        position += TRANSFER_BUFFER_SIZE as u64; // the chunk at index has already been written
-        writer.seek(SeekFrom::Start(position)).await?; // seek to the position
-    }
+    let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
+    writer.seek(SeekFrom::Start(position)).await?; // seek to the initial position
 
     debug!("starting writer at position {}", position);
 
@@ -49,21 +44,19 @@ pub(crate) async fn writer(
             }
             // if the chunk is at the current position, write it
             Ordering::Equal => {
-                write_data(&mut writer, &job.data, &mut position, job.len).await?;
+                write_data(&mut writer, &job.data, &mut position, file_size).await?;
                 confirmation_queue.push(job.index);
-                metadata.complete(job.index).await?;
             }
         }
 
-        // write all concurrent chunks from `cache`
+        // write all concurrent chunks from the cache
         while let Some(job) = cache.remove(&position) {
-            write_data(&mut writer, &job.data, &mut position, job.len).await?;
-            metadata.complete(job.index).await?;
+            write_data(&mut writer, &job.data, &mut position, file_size).await?;
         }
     }
 
     info!("writer wrote all expected bytes");
-    metadata.remove().await?; // remove the metadata file
+    writer.flush().await?;
 
     Ok(())
 }
@@ -74,8 +67,11 @@ async fn write_data<T: AsyncWrite + Unpin>(
     writer: &mut T,
     buffer: &[u8],
     position: &mut u64,
-    len: usize,
+    file_size: u64,
 ) -> io::Result<()> {
-    *position += len as u64; // advance the position
-    writer.write_all(&buffer[..len]).await // write the data
+    // calculate the length of the data to write
+    let len = (file_size - *position).min(TRANSFER_BUFFER_SIZE as u64);
+
+    *position += len; // advance the position
+    writer.write_all(&buffer[..len as usize]).await // write the data
 }

@@ -1,4 +1,5 @@
 use std::mem;
+use std::net::IpAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -6,22 +7,20 @@ use std::time::Duration;
 
 use deadqueue::limited::Queue;
 use log::{debug, error, info, warn};
-use tokio::fs::rename;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::fs::{metadata, rename};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout};
 use tokio::{io, select};
 
-use crate::receiver::metadata::Metadata;
 use crate::receiver::writer::writer;
 use crate::{
     socket_factory, LimitedQueue, Options, Result, TransferStats, UnlimitedQueue, INDEX_SIZE,
     MAX_RETRIES, RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
 };
 
-mod metadata;
 mod writer;
 
 type WriterQueue = LimitedQueue<Job>;
@@ -30,10 +29,14 @@ type WriterQueue = LimitedQueue<Job>;
 struct Job {
     data: [u8; TRANSFER_BUFFER_SIZE], // the file chunk
     index: u64,                       // the index of the file chunk
-    len: usize,                       // the length of the file chunk
 }
 
-pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<()> {
+pub(crate) async fn main(
+    mut options: Options,
+    stats: TransferStats,
+    mut control_stream: TcpStream,
+    remote_addr: IpAddr,
+) -> Result<()> {
     if options.destination.file_path.is_dir() {
         info!("destination is a folder, reformatting path with target file");
 
@@ -45,13 +48,20 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 
     info!("receiving {} -> {}", options.source, options.destination);
 
-    let meta_data = Metadata::new(&options.destination.file_path).await?;
+    let partial_path = options.destination.file_path.with_extension("partial");
+
+    let start_index = if partial_path.exists() {
+        info!("partial file exists, resuming transfer");
+        let metadata = metadata(&partial_path).await?;
+        // the file is written sequentially, so we can calculate the start index by rounding down to the nearest multiple of the transfer buffer size
+        metadata.len().div_floor(TRANSFER_BUFFER_SIZE as u64) * TRANSFER_BUFFER_SIZE as u64
+    } else {
+        0
+    };
+
     stats
         .confirmed_data
-        .fetch_add(meta_data.initial_index as usize, Relaxed);
-
-    let listener = TcpListener::bind(("0.0.0.0", options.start_port)).await?;
-    let (mut control_stream, _remote_addr) = listener.accept().await?;
+        .fetch_add(start_index as usize, Relaxed);
 
     // receive the file size from the remote client
     let file_size = control_stream.read_u64().await?;
@@ -59,13 +69,13 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
     debug!("received file size: {}", file_size);
 
     // send the start index to the remote client
-    debug!("sending start index {}", meta_data.initial_index);
-    control_stream.write_u64(meta_data.initial_index).await?;
+    debug!("sending start index {}", start_index);
+    control_stream.write_u64(start_index).await?;
 
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
         options.end_port,
-        options.source.host.unwrap().as_str().parse()?,
+        remote_addr,
         options.threads,
     )
     .await?;
@@ -76,11 +86,11 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
     let confirmation_queue: UnlimitedQueue<u64> = Default::default();
 
     let writer_handle = tokio::spawn(writer(
-        options.destination.file_path.with_extension("partial"),
+        partial_path.clone(),
         writer_queue.clone(),
         file_size,
         confirmation_queue.clone(),
-        meta_data,
+        start_index,
     ));
 
     let confirmation_handle = tokio::spawn(send_confirmations(
@@ -107,7 +117,7 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 
             // rename the partial file to the original file
             rename(
-                &options.destination.file_path.with_extension("partial"),
+                &partial_path,
                 &options.destination.file_path,
             )
             .await?;
@@ -119,20 +129,19 @@ pub(crate) async fn main(mut options: Options, stats: TransferStats) -> Result<(
 }
 
 async fn receiver(queue: WriterQueue, socket: UdpSocket) {
-    let mut buf = [0; INDEX_SIZE + TRANSFER_BUFFER_SIZE];
-    let mut retries = 0;
+    let mut buf = [0; INDEX_SIZE + TRANSFER_BUFFER_SIZE]; // buffer for receiving data
+    let mut retries = 0; // counter to keep track of retries
 
     while retries < MAX_RETRIES {
         match timeout(RECEIVE_TIMEOUT, socket.recv(&mut buf)).await {
             Ok(Ok(read)) if read > 0 => {
-                retries = 0;
+                retries = 0; // reset retries
                 let data = buf[INDEX_SIZE..].try_into().unwrap();
                 let index = u64::from_be_bytes(buf[..INDEX_SIZE].try_into().unwrap());
-                let len = read - INDEX_SIZE;
-                queue.push(Job { data, index, len }).await;
+                queue.push(Job { data, index }).await;
             }
-            Ok(Ok(_)) => warn!("0 byte read?"),
-            Ok(Err(_)) | Err(_) => retries += 1,
+            Ok(Ok(_)) => warn!("0 byte read?"), // this should never happen
+            Ok(Err(_)) | Err(_) => retries += 1, // catch errors and timeouts
         }
     }
 }
@@ -159,30 +168,35 @@ async fn send_confirmations(
                     continue;
                 }
 
+                // take the data out of the mutex
                 let indexes = mem::take(&mut *data);
-                drop(data);
+                drop(data); // release the lock on data
 
-                send_indexes(&mut control_stream, &indexes).await?;
+                write_indexes(&mut control_stream, &indexes).await?;
             }
         }
     });
 
     let future = async {
         loop {
-            let index = queue.pop().await;
-            confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed);
-            data.lock().await.push(index);
+            let index = queue.pop().await; // wait for a confirmation
+            confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed); // increment the confirmed data counter
+            data.lock().await.push(index); // push the index to the data vector
         }
     };
 
+    // propagate errors from the sender thread while executing the future
     select! {
         result = sender_handle => result?,
         _ = future => Ok(())
     }
 }
 
-// sends an array of indexes to the socket
-async fn send_indexes(control_stream: &mut TcpStream, data: &[u64]) -> io::Result<()> {
+// writes an array of u64 values to the control stream
+async fn write_indexes<T: AsyncWrite + Unpin>(
+    control_stream: &mut T,
+    data: &[u64],
+) -> io::Result<()> {
     let length = data.len() as u64;
     control_stream.write_u64(length).await?;
 

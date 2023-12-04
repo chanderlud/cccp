@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::net::IpAddr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -9,11 +10,11 @@ use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::select;
 use tokio::sync::{Mutex, RwLock, Semaphore};
-use tokio::time::{interval, sleep, Instant};
+use tokio::time::{interval, Instant};
 
 use crate::{
-    socket_factory, Options, Result, TransferStats, UnlimitedQueue, MAX_RETRIES, REQUEUE_INTERVAL,
-    TRANSFER_BUFFER_SIZE,
+    socket_factory, Options, Result, TransferStats, UnlimitedQueue, INDEX_SIZE, MAX_RETRIES,
+    REQUEUE_INTERVAL, TRANSFER_BUFFER_SIZE,
 };
 
 mod reader;
@@ -22,23 +23,21 @@ type JobQueue = UnlimitedQueue<Job>;
 type JobCache = Arc<RwLock<BTreeMap<u64, Job>>>;
 
 struct Job {
-    data: Vec<u8>, // index (8 bytes) + the file chunk
-    index: u64,    // the index of the file chunk
+    data: [u8; INDEX_SIZE + TRANSFER_BUFFER_SIZE],
+    index: u64,
     cached_at: Option<Instant>,
 }
 
-pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
-    info!("sending {:?} to {:?}", options.source, options.destination);
+pub(crate) async fn main(
+    options: Options,
+    stats: TransferStats,
+    mut control_stream: TcpStream,
+    remote_addr: IpAddr,
+) -> Result<()> {
+    info!("sending {} -> {}", options.source, options.destination);
 
-    let remote_address = options.destination.host.unwrap().parse()?;
     let file_size = options.source.file_size().await?;
     stats.total_data.store(file_size as usize, Relaxed);
-
-    // give the receiver time to start listening
-    sleep(Duration::from_millis(1_000)).await;
-
-    // connect to the remote client on the first port in the range
-    let mut control_stream = TcpStream::connect((remote_address, options.start_port)).await?;
     // send the file size to the remote client
     control_stream.write_u64(file_size).await?;
 
@@ -50,7 +49,7 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
     let sockets = socket_factory(
         options.start_port + 1, // the first port is used for control messages
         options.end_port,
-        remote_address,
+        remote_addr,
         options.threads,
     )
     .await?;
@@ -96,19 +95,7 @@ pub(crate) async fn main(options: Options, stats: TransferStats) -> Result<()> {
         }
     };
 
-    // let reader_future = async {
-    //     _ = reader_handle.await;
-    //     info!("reader exited");
-    //
-    //     while !queue.is_empty() && !cache.read().await.is_empty() {
-    //         sleep(Duration::from_secs(1)).await;
-    //     }
-    //
-    //     info!("the queue and cache emptied, so hopefully all the data was sent");
-    // };
-
     select! {
-        // _ = reader_future => {},
         _ = sender_future => error!("senders exited"),
         result = confirmation_handle => {
             // the confirmation receiver never exits unless an error occurs

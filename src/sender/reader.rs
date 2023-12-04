@@ -18,21 +18,16 @@ pub(crate) async fn reader(
 ) -> Result<()> {
     let file = File::open(path).await?;
     let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
-
-    let mut buffer = vec![0; INDEX_SIZE + TRANSFER_BUFFER_SIZE];
-
-    if index > 0 {
-        index += TRANSFER_BUFFER_SIZE as u64;
-    }
-
     reader.seek(SeekFrom::Start(index)).await?;
+
+    let mut buffer = [0; INDEX_SIZE + TRANSFER_BUFFER_SIZE];
 
     debug!("starting reader at index {}", index);
 
     loop {
         let permit = read.acquire().await.unwrap();
 
-        // write index
+        // write index to buffer
         buffer[..INDEX_SIZE].copy_from_slice(&index.to_be_bytes());
 
         // read data into buffer after checksum and index
@@ -43,15 +38,15 @@ pub(crate) async fn reader(
             break;
         }
 
-        // push job with index, checksum, and data
+        // push job to queue
         queue.push(Job {
-            data: buffer[..INDEX_SIZE + read].to_vec(),
+            data: buffer,
             index,
             cached_at: None,
         });
 
-        index += read as u64;
-        permit.forget();
+        index += read as u64; // increment index by bytes read
+        permit.forget(); // release permit
     }
 
     Ok(())
