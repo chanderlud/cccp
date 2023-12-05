@@ -258,6 +258,10 @@ impl FileLocation {
         self.host.is_none() || (self.host.is_some() && self.file_path.exists())
     }
 
+    fn is_dir(&self) -> bool {
+        self.file_path.is_dir()
+    }
+
     async fn file_size(&self) -> io::Result<u64> {
         let metadata = tokio::fs::metadata(&self.file_path).await?;
         Ok(metadata.len())

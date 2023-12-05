@@ -37,6 +37,7 @@ pub(crate) async fn main(
     mut control_stream: TcpStream,
     remote_addr: IpAddr,
 ) -> Result<()> {
+    // TODO what if the source is a directory?
     if options.destination.file_path.is_dir() {
         info!("destination is a folder, reformatting path with target file");
 

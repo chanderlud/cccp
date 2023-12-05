@@ -36,6 +36,17 @@ pub(crate) async fn main(
 ) -> Result<()> {
     info!("sending {} -> {}", options.source, options.destination);
 
+    if options.source.is_dir() {
+        for entry in options.source.file_path.read_dir()? {
+            if let Ok(entry) = entry {
+                println!("{:?}", entry);
+                entry.path().is_dir(); // lol
+            }
+        }
+
+        return Ok(());
+    }
+
     let file_size = options.source.file_size().await?;
     stats.total_data.store(file_size as usize, Relaxed);
     // send the file size to the remote client
