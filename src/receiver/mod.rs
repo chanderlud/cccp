@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::mem;
 use std::net::IpAddr;
 use std::sync::atomic::AtomicUsize;
@@ -5,9 +6,8 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
-use deadqueue::limited::Queue;
 use log::{debug, error, info, warn};
-use tokio::fs::{metadata, rename};
+use tokio::fs::metadata;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
@@ -15,15 +15,15 @@ use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout};
 use tokio::{io, select};
 
-use crate::receiver::writer::writer;
+use crate::receiver::writer::{writer, SplitQueue};
 use crate::{
-    socket_factory, LimitedQueue, Options, Result, TransferStats, UnlimitedQueue, INDEX_SIZE,
-    MAX_RETRIES, RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
+    socket_factory, Options, Result, TransferStats, UnlimitedQueue, INDEX_SIZE, MAX_RETRIES,
+    RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
 };
 
 mod writer;
 
-type WriterQueue = LimitedQueue<Job>;
+type WriterQueue = Arc<SplitQueue>;
 
 #[derive(Clone)]
 struct Job {
@@ -83,15 +83,17 @@ pub(crate) async fn main(
 
     info!("opened sockets");
 
-    let writer_queue: WriterQueue = Arc::new(Queue::new(1_000));
-    let confirmation_queue: UnlimitedQueue<u64> = Default::default();
+    let writer_queue: WriterQueue = Default::default();
+    let confirmation_queue: UnlimitedQueue<(u32, u64)> = Default::default();
 
     let writer_handle = tokio::spawn(writer(
+        options.destination.file_path,
         partial_path.clone(),
         writer_queue.clone(),
         file_size,
         confirmation_queue.clone(),
         start_index,
+        0,
     ));
 
     let confirmation_handle = tokio::spawn(send_confirmations(
@@ -115,13 +117,6 @@ pub(crate) async fn main(
         result = confirmation_handle => error!("confirmation sender failed {:?}", result),
         result = writer_handle => {
             info!("writer finished with result {:?}", result);
-
-            // rename the partial file to the original file
-            rename(
-                &partial_path,
-                &options.destination.file_path,
-            )
-            .await?;
         },
         _ = receiver_future => info!("receiver(s) exited"),
     }
@@ -137,9 +132,11 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) {
         match timeout(RECEIVE_TIMEOUT, socket.recv(&mut buf)).await {
             Ok(Ok(read)) if read > 0 => {
                 retries = 0; // reset retries
-                let data = buf[INDEX_SIZE..].try_into().unwrap();
+                             // TODO let id = ...
+                let id = 0;
                 let index = u64::from_be_bytes(buf[..INDEX_SIZE].try_into().unwrap());
-                queue.push(Job { data, index }).await;
+                let data = buf[INDEX_SIZE..].try_into().unwrap();
+                queue.push(Job { data, index }, id).await;
             }
             Ok(Ok(_)) => warn!("0 byte read?"), // this should never happen
             Ok(Err(_)) | Err(_) => retries += 1, // catch errors and timeouts
@@ -149,10 +146,10 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) {
 
 async fn send_confirmations(
     mut control_stream: TcpStream,
-    queue: UnlimitedQueue<u64>,
+    queue: UnlimitedQueue<(u32, u64)>,
     confirmed_data: Arc<AtomicUsize>,
 ) -> io::Result<()> {
-    let data: Arc<Mutex<Vec<u64>>> = Default::default();
+    let data: Arc<Mutex<Vec<(u32, u64)>>> = Default::default();
 
     let sender_handle: JoinHandle<io::Result<()>> = tokio::spawn({
         let data = data.clone();
@@ -170,19 +167,28 @@ async fn send_confirmations(
                 }
 
                 // take the data out of the mutex
-                let indexes = mem::take(&mut *data);
+                let confirmations = mem::take(&mut *data);
                 drop(data); // release the lock on data
 
-                write_indexes(&mut control_stream, &indexes).await?;
+                let map: HashMap<u32, Vec<u64>> = HashMap::new();
+
+                // group the confirmations by id
+                let map = confirmations.into_iter().fold(map, |mut map, (id, index)| {
+                    map.entry(id).or_default().push(index);
+                    map
+                });
+
+                // TODO send confirmations
+                // write_indexes(&mut control_stream, &indexes).await?;
             }
         }
     });
 
     let future = async {
         loop {
-            let index = queue.pop().await; // wait for a confirmation
+            let confirmation = queue.pop().await; // wait for a confirmation
             confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed); // increment the confirmed data counter
-            data.lock().await.push(index); // push the index to the data vector
+            data.lock().await.push(confirmation); // push the index to the data vector
         }
     };
 

@@ -29,8 +29,8 @@ use tokio::{io, select};
 mod receiver;
 mod sender;
 
+// type aliases used throughout
 type UnlimitedQueue<T> = Arc<deadqueue::unlimited::Queue<T>>;
-type LimitedQueue<T> = Arc<deadqueue::limited::Queue<T>>;
 type Result<T> = std::result::Result<T, Error>;
 
 const READ_BUFFER_SIZE: usize = 10_000_000;
