@@ -15,7 +15,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{interval, Instant};
 
 use crate::items::{
-    message, Confirmations, Done, End, FileDetail, Files, Message, Start, StartIndex,
+    message, Confirmations, Done, End, FileDetail, Manifest, Message, Start, StartIndex,
 };
 use crate::sender::reader::reader;
 use crate::{
@@ -52,19 +52,26 @@ pub(crate) async fn main(
 
     let mut file_map: HashMap<u32, FileDetail> = HashMap::with_capacity(files.len());
 
-    for (index, file) in files.into_iter().enumerate() {
+    for (index, mut file) in files.into_iter().enumerate() {
         let file_size = tokio::fs::metadata(&file).await?.len();
         stats.total_data.fetch_add(file_size as usize, Relaxed);
 
-        if let Ok(file_path) = file.strip_prefix(&options.source.file_path) {
-            file_map.insert(
-                index as u32,
-                FileDetail {
-                    file_path: file_path.to_string_lossy().to_string(),
-                    file_size,
-                },
-            );
+        if file == options.source.file_path {
+            file = PathBuf::from(file.iter().last().unwrap())
+        } else {
+            file = file
+                .strip_prefix(&options.source.file_path)
+                .unwrap()
+                .to_path_buf();
         }
+
+        file_map.insert(
+            index as u32,
+            FileDetail {
+                file_path: file.to_string_lossy().to_string(),
+                file_size,
+            },
+        );
     }
 
     let directories = dirs
@@ -78,13 +85,13 @@ pub(crate) async fn main(
         })
         .collect();
 
-    let files = Files {
+    let manifest = Manifest {
         directories,
         files: file_map,
     };
 
-    debug!("sending files: {:?}", files);
-    write_message(&mut str_stream, &files).await?;
+    debug!("sending manifest: {:?}", manifest);
+    write_message(&mut str_stream, &manifest).await?;
 
     let sockets = socket_factory(
         options.start_port + 2, // the first two ports are used for control messages and confirmations
@@ -107,7 +114,7 @@ pub(crate) async fn main(
     let mut read_semaphores: HashMap<u32, Arc<Semaphore>> = Default::default();
 
     // create a semaphore for each file
-    for id in files.files.keys() {
+    for id in manifest.files.keys() {
         let read = Arc::new(Semaphore::new(1_000));
         read_semaphores.insert(*id, read);
     }
@@ -138,7 +145,7 @@ pub(crate) async fn main(
 
     let controller_handle = tokio::spawn(controller(
         str_stream,
-        files,
+        manifest,
         queue.clone(),
         read_semaphores,
         stats.confirmed_data,
@@ -189,7 +196,7 @@ async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<S
 
 async fn controller(
     mut control_stream: TcpStream,
-    mut files: Files,
+    mut files: Manifest,
     job_queue: JobQueue,
     read_semaphores: Arc<HashMap<u32, Arc<Semaphore>>>,
     confirmed_data: Arc<AtomicUsize>,

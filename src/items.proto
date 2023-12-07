@@ -4,7 +4,7 @@ package cccp.items;
 
 message Message {
   oneof message {
-    Files files = 1;
+    Manifest manifest = 1;
     Confirmations confirmations = 2;
     StartIndex start_index = 3;
     Start start = 4;
@@ -13,7 +13,7 @@ message Message {
   }
 }
 
-message Files {
+message Manifest {
   repeated string directories = 1;
   map<uint32, FileDetail> files = 2; // map for file details
 }

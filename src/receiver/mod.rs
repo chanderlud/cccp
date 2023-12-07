@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout};
 
-use crate::items::{message, ConfirmationIndexes, Confirmations, Files, Message, StartIndex};
+use crate::items::{message, ConfirmationIndexes, Confirmations, Manifest, Message, StartIndex};
 use crate::receiver::writer::{writer, SplitQueue};
 use crate::{
     read_message, socket_factory, write_message, Options, Result, TransferStats, UnlimitedQueue,
@@ -43,18 +43,23 @@ pub(crate) async fn main(
 ) -> Result<()> {
     info!("receiving {} -> {}", options.source, options.destination);
 
-    let files: Files = read_message(&mut str_stream).await?;
-    debug!("received files: {:?}", files);
+    let manifest: Manifest = read_message(&mut str_stream).await?;
+    debug!("received manifest: {:?}", manifest);
+
+    // if multiple files are being received, the destination should be a directory
+    if manifest.files.len() > 1 {
+        create_dir_all(&options.destination.file_path).await?;
+    }
 
     // create the local directories needed to write the files
-    for dir in &files.directories {
+    for dir in &manifest.directories {
         let local_dir = options.destination.file_path.join(dir);
         debug!("creating directory {:?}", local_dir);
         create_dir_all(local_dir).await?;
     }
 
     // set the total data to be received
-    for details in files.files.values() {
+    for details in manifest.files.values() {
         stats
             .total_data
             .fetch_add(details.file_size as usize, Relaxed);
@@ -85,7 +90,7 @@ pub(crate) async fn main(
 
     let controller_handle = tokio::spawn(controller(
         str_stream,
-        files.clone(),
+        manifest.clone(),
         writer_queue.clone(),
         confirmation_queue,
         stats.confirmed_data.clone(),
@@ -109,8 +114,6 @@ pub(crate) async fn main(
         result = controller_handle => result?,
         _ = receiver_future => { warn!("receiver(s) exited"); Ok(()) },
     }
-
-
 }
 
 async fn receiver(queue: WriterQueue, socket: UdpSocket) {
@@ -137,7 +140,7 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) {
 
 async fn controller(
     mut str_stream: TcpStream,
-    mut files: Files,
+    mut files: Manifest,
     writer_queue: WriterQueue,
     confirmation_queue: ConfirmationQueue,
     confirmed_data: Arc<AtomicUsize>,

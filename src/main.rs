@@ -163,7 +163,7 @@ struct Options {
         short,
         long = "rate",
         help = "the rate to send data at (bytes per second)",
-        default_value = "10000000"
+        default_value = "1000000"
     )]
     rate: u64,
 
