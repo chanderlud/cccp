@@ -29,6 +29,23 @@ jobs:
         override: true
         components: rustfmt, clippy
 
+    - name: Install protobuf compiler (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+
+    - name: Install protobuf compiler (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install protobuf
+
+    - name: Install protobuf compiler (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: crazy-max/ghaction-chocolatey@v1
+      with:
+        args: install protoc
+
     - name: Build
       run: cargo build --verbose
 
