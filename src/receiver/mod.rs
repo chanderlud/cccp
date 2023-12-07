@@ -109,8 +109,6 @@ pub(crate) async fn main(
         result = controller_handle => result?,
         _ = receiver_future => { warn!("receiver(s) exited"); Ok(()) },
     }
-
-
 }
 
 async fn receiver(queue: WriterQueue, socket: UdpSocket) {
