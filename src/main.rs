@@ -1,5 +1,6 @@
 #![feature(int_roundings)]
 
+use async_channel::Receiver;
 use std::error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
@@ -17,12 +18,13 @@ use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info, warn, LevelFilter};
+use prost::Message;
 use regex::Regex;
 use rpassword::prompt_password;
 use simple_logging::{log_to_file, log_to_stderr};
 use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-use tokio::net::{TcpListener, TcpSocket, UdpSocket};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
 use tokio::time::{interval, sleep};
 use tokio::{io, select};
 
@@ -37,11 +39,17 @@ const READ_BUFFER_SIZE: usize = 10_000_000;
 const WRITE_BUFFER_SIZE: usize = 5_000_000;
 const TRANSFER_BUFFER_SIZE: usize = 1024;
 const INDEX_SIZE: usize = std::mem::size_of::<u64>();
+const ID_SIZE: usize = std::mem::size_of::<u32>();
 const MAX_RETRIES: usize = 10;
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 // how long to wait for a job to be confirmed before requeuing it
 const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
+const MAX_CONCURRENT_TRANSFERS: usize = 100;
+
+pub mod items {
+    include!(concat!(env!("OUT_DIR"), "/cccp.items.rs"));
+}
 
 #[derive(Debug)]
 struct Error {
@@ -50,14 +58,16 @@ struct Error {
 
 #[derive(Debug)]
 enum ErrorKind {
-    IoError(io::Error),
-    ParseError(std::net::AddrParseError),
+    Io(io::Error),
+    Parse(std::net::AddrParseError),
+    Decode(prost::DecodeError),
+    Join(tokio::task::JoinError),
 }
 
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
         Self {
-            kind: ErrorKind::IoError(error),
+            kind: ErrorKind::Io(error),
         }
     }
 }
@@ -65,7 +75,23 @@ impl From<io::Error> for Error {
 impl From<std::net::AddrParseError> for Error {
     fn from(error: std::net::AddrParseError) -> Self {
         Self {
-            kind: ErrorKind::ParseError(error),
+            kind: ErrorKind::Parse(error),
+        }
+    }
+}
+
+impl From<prost::DecodeError> for Error {
+    fn from(error: prost::DecodeError) -> Self {
+        Self {
+            kind: ErrorKind::Decode(error),
+        }
+    }
+}
+
+impl From<tokio::task::JoinError> for Error {
+    fn from(error: tokio::task::JoinError) -> Self {
+        Self {
+            kind: ErrorKind::Join(error),
         }
     }
 }
@@ -73,11 +99,13 @@ impl From<std::net::AddrParseError> for Error {
 impl Termination for Error {
     fn report(self) -> ExitCode {
         ExitCode::from(match self.kind {
-            ErrorKind::IoError(error) => match error.kind() {
+            ErrorKind::Io(error) => match error.kind() {
                 io::ErrorKind::NotFound => 1,
                 _ => 2,
             },
-            ErrorKind::ParseError(_) => 3,
+            ErrorKind::Parse(_) => 3,
+            ErrorKind::Decode(_) => 4,
+            ErrorKind::Join(_) => 5,
         })
     }
 }
@@ -257,15 +285,6 @@ impl FileLocation {
     fn is_local(&self) -> bool {
         self.host.is_none() || (self.host.is_some() && self.file_path.exists())
     }
-
-    fn is_dir(&self) -> bool {
-        self.file_path.is_dir()
-    }
-
-    async fn file_size(&self) -> io::Result<u64> {
-        let metadata = tokio::fs::metadata(&self.file_path).await?;
-        Ok(metadata.len())
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -328,8 +347,8 @@ async fn main() -> Result<()> {
                 port_count, options.threads, port_count
             );
             options.threads = port_count;
-        } else if port_count < 2 {
-            panic!("a minimum of two ports are required")
+        } else if port_count < 3 {
+            panic!("a minimum of three ports are required")
         } else if port_count > options.threads {
             warn!(
                 "{} ports > {} threads. changing port range to {}-{}",
@@ -417,25 +436,12 @@ async fn main() -> Result<()> {
                 client.execute(&command).await
             });
 
-            let bind = match options.bind_address {
-                Some(addr) => SocketAddr::new(addr, 0),
-                None => "0.0.0.0:0".parse().unwrap(),
-            };
-
-            // connect to the remote client on the first port in the range
-            let control_stream = loop {
-                let socket = TcpSocket::new_v4().unwrap();
-                socket.bind(bind).unwrap();
-
-                let remote_socket = SocketAddr::new(remote_addr, options.start_port);
-
-                if let Ok(stream) = socket.connect(remote_socket).await {
-                    break stream;
-                } else {
-                    // give the receiver time to start listening
-                    sleep(Duration::from_millis(100)).await;
-                }
-            };
+            // receiver -> sender stream
+            let rts_stream =
+                connect_stream(remote_addr, options.start_port, options.bind_address).await?;
+            // sender -> receiver stream
+            let str_stream =
+                connect_stream(remote_addr, options.start_port + 1, options.bind_address).await?;
 
             let display_handle = tokio::spawn({
                 let stats = stats.clone();
@@ -445,9 +451,9 @@ async fn main() -> Result<()> {
 
             let main_future = async {
                 if sender {
-                    sender::main(options, stats, control_stream, remote_addr).await
+                    sender::main(options, stats, rts_stream, str_stream, remote_addr).await
                 } else {
-                    receiver::main(options, stats, control_stream, remote_addr).await
+                    receiver::main(options, stats, rts_stream, str_stream, remote_addr).await
                 }
             };
 
@@ -465,6 +471,8 @@ async fn main() -> Result<()> {
                             1 => error!("remote client failed, file not found"),
                             2 => error!("remote client failed, unknown IO error"),
                             3 => error!("remote client failed, parse error"),
+                            4 => error!("remote client failed, decode error"),
+                            5 => error!("remote client failed, join error"),
                             _ => error!("remote client failed, unknown error"),
                         }
                     }
@@ -480,13 +488,20 @@ async fn main() -> Result<()> {
             }
         }
         Mode::Remote(sender) => {
+            // receiver -> sender stream
             let listener = TcpListener::bind(("0.0.0.0", options.start_port)).await?;
-            let (control_stream, remote_addr) = listener.accept().await?;
+            let (rts_stream, remote_addr) = listener.accept().await?;
+
+            // sender -> receiver stream
+            let listener = TcpListener::bind(("0.0.0.0", options.start_port + 1)).await?;
+            let (str_stream, _) = listener.accept().await?;
+
+            let remote_addr = remote_addr.ip();
 
             if sender {
-                sender::main(options, stats, control_stream, remote_addr.ip()).await?;
+                sender::main(options, stats, rts_stream, str_stream, remote_addr).await?;
             } else {
-                receiver::main(options, stats, control_stream, remote_addr.ip()).await?;
+                receiver::main(options, stats, rts_stream, str_stream, remote_addr).await?;
             };
         }
     }
@@ -495,7 +510,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// opens the sockets that will be used to send data
+/// opens the sockets that will be used to send data
 async fn socket_factory(
     start: u16,
     end: u16,
@@ -520,6 +535,7 @@ async fn socket_factory(
         .await
 }
 
+/// try to get an ssh key for authentication
 async fn ssh_key_auth() -> io::Result<AuthMethod> {
     // get the home directory of the current user
     let home_dir = dirs::home_dir().ok_or(io::Error::new(
@@ -540,11 +556,13 @@ async fn ssh_key_auth() -> io::Result<AuthMethod> {
     Ok(AuthMethod::with_key(&key, None))
 }
 
+/// prompt the user for a password
 fn password_auth() -> io::Result<AuthMethod> {
     let password = prompt_password("password: ")?;
     Ok(AuthMethod::with_password(&password))
 }
 
+/// print a progress bar to stdout
 async fn print_progress(stats: TransferStats) {
     let bar = ProgressBar::new(100);
     let mut interval = interval(Duration::from_secs(1));
@@ -562,4 +580,71 @@ async fn print_progress(stats: TransferStats) {
             stats.confirmed_data.load(Relaxed) as f64 / stats.total_data.load(Relaxed) as f64;
         bar.set_position((progress * 100_f64) as u64);
     }
+}
+
+/// connect to a remote client on a given port
+async fn connect_stream(
+    remote_addr: IpAddr,
+    port: u16,
+    bind_addr: Option<IpAddr>,
+) -> Result<TcpStream> {
+    let bind = match bind_addr {
+        Some(addr) => SocketAddr::new(addr, 0),
+        None => "0.0.0.0:0".parse()?,
+    };
+
+    // connect to the remote client
+    loop {
+        let socket = TcpSocket::new_v4()?;
+        socket.bind(bind)?;
+
+        let remote_socket = SocketAddr::new(remote_addr, port);
+
+        if let Ok(stream) = socket.connect(remote_socket).await {
+            break Ok(stream);
+        } else {
+            // give the receiver time to start listening
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// write a `Message` to a writer
+async fn write_message<W: AsyncWrite + Unpin, M: Message>(
+    writer: &mut W,
+    message: &M,
+) -> Result<()> {
+    let len = message.encoded_len();
+    writer.write_u32(len as u32).await?;
+
+    let mut buffer = Vec::with_capacity(len);
+    message.encode(&mut buffer).unwrap();
+
+    writer.write_all(&buffer).await?;
+
+    Ok(())
+}
+
+/// read a `Message` from a reader
+async fn read_message<R: AsyncReadExt + Unpin, M: Message + Default>(reader: &mut R) -> Result<M> {
+    let len = reader.read_u32().await? as usize;
+
+    let mut buffer = vec![0; len];
+    reader.read_exact(&mut buffer).await?;
+
+    let message = M::decode(&buffer[..])?;
+
+    Ok(message)
+}
+
+/// send messages from a channel to a writer
+async fn message_sender<W: AsyncWrite + Unpin, M: Message>(
+    mut writer: W,
+    receiver: Receiver<M>,
+) -> Result<()> {
+    while let Ok(message) = receiver.recv().await {
+        write_message(&mut writer, &message).await?;
+    }
+
+    Ok(())
 }

@@ -1,27 +1,30 @@
+use async_channel::{SendError, Sender};
 use deadqueue::limited::Queue;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::io::SeekFrom;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use log::{debug, info};
 use tokio::fs::{rename, OpenOptions};
 use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::RwLock;
 
-use crate::receiver::{Job, WriterQueue};
-use crate::{UnlimitedQueue, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
+use crate::items::{message, End, Message};
+use crate::receiver::{ConfirmationQueue, Job, WriterQueue};
+use crate::{TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
 
 #[derive(Default)]
 pub(crate) struct SplitQueue {
-    inner: RwLock<HashMap<u32, Queue<Job>>>,
+    inner: RwLock<HashMap<u32, Arc<Queue<Job>>>>,
 }
 
 impl SplitQueue {
     pub(crate) async fn push_queue(&self, id: u32) {
         let mut inner = self.inner.write().await;
 
-        inner.insert(id, Queue::new(1_000));
+        inner.insert(id, Arc::new(Queue::new(1_000)));
     }
 
     pub(crate) async fn pop_queue(&self, id: &u32) {
@@ -39,9 +42,12 @@ impl SplitQueue {
     }
 
     pub(crate) async fn pop(&self, id: &u32) -> Option<Job> {
-        let inner = self.inner.read().await;
+        let queue = {
+            let inner = self.inner.read().await;
+            inner.get(id).cloned()
+        };
 
-        if let Some(queue) = inner.get(id) {
+        if let Some(queue) = queue {
             Some(queue.pop().await)
         } else {
             None
@@ -49,29 +55,46 @@ impl SplitQueue {
     }
 }
 
+/// stores file details for writer
+pub(crate) struct File {
+    pub(crate) path: PathBuf,
+    pub(crate) partial_path: PathBuf,
+    pub(crate) file_size: u64,
+}
+
+impl File {
+    /// rename the partial file to the final name
+    async fn rename(&self) -> io::Result<()> {
+        rename(&self.partial_path, &self.path).await
+    }
+}
+
 pub(crate) async fn writer(
-    path: PathBuf,
-    partial_path: PathBuf,
+    file_details: File,
     writer_queue: WriterQueue,
-    file_size: u64,
-    confirmation_queue: UnlimitedQueue<(u32, u64)>,
+    confirmation_queue: ConfirmationQueue,
     mut position: u64,
     id: u32,
+    message_sender: Sender<Message>,
 ) -> io::Result<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
-        .open(&partial_path)
+        .open(&file_details.partial_path)
         .await?;
 
     let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
     writer.seek(SeekFrom::Start(position)).await?; // seek to the initial position
 
-    debug!("starting writer at position {}", position);
+    debug!(
+        "writer for {} starting at {}",
+        file_details.path.display(),
+        position
+    );
 
     let mut cache: BTreeMap<u64, Job> = BTreeMap::new();
 
-    while position != file_size {
+    while position != file_details.file_size {
         let job = writer_queue.pop(&id).await.unwrap();
 
         match job.index.cmp(&position) {
@@ -85,20 +108,37 @@ pub(crate) async fn writer(
             }
             // if the chunk is at the current position, write it
             Ordering::Equal => {
-                write_data(&mut writer, &job.data, &mut position, file_size).await?;
+                write_data(
+                    &mut writer,
+                    &job.data,
+                    &mut position,
+                    file_details.file_size,
+                )
+                .await?;
                 confirmation_queue.push((id, job.index));
             }
         }
 
         // write all concurrent chunks from the cache
         while let Some(job) = cache.remove(&position) {
-            write_data(&mut writer, &job.data, &mut position, file_size).await?;
+            write_data(
+                &mut writer,
+                &job.data,
+                &mut position,
+                file_details.file_size,
+            )
+            .await?;
         }
     }
 
     info!("writer wrote all expected bytes");
-    writer.flush().await?;
-    rename(&partial_path, path).await?;
+
+    writer.flush().await?; // flush the writer
+    file_details.rename().await?; // rename the file
+    writer_queue.pop_queue(&id).await; // remove the queue
+    send_end_message(&message_sender, id)
+        .await
+        .expect("failed to send end message"); // send end message
 
     Ok(())
 }
@@ -116,4 +156,12 @@ async fn write_data<T: AsyncWrite + Unpin>(
 
     *position += len; // advance the position
     writer.write_all(&buffer[..len as usize]).await // write the data
+}
+
+async fn send_end_message(sender: &Sender<Message>, id: u32) -> Result<(), SendError<Message>> {
+    let end_message = Message {
+        message: Some(message::Message::End(End { id })),
+    };
+
+    sender.send(end_message).await
 }

@@ -1,29 +1,32 @@
+use async_channel::Sender;
 use std::collections::HashMap;
 use std::mem;
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
 use log::{debug, error, info, warn};
-use tokio::fs::metadata;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::fs::{create_dir_all, metadata};
 use tokio::net::{TcpStream, UdpSocket};
+use tokio::select;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout};
-use tokio::{io, select};
 
+use crate::items::{message, ConfirmationIndexes, Confirmations, Files, Message, StartIndex};
 use crate::receiver::writer::{writer, SplitQueue};
 use crate::{
-    socket_factory, Options, Result, TransferStats, UnlimitedQueue, INDEX_SIZE, MAX_RETRIES,
-    RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
+    read_message, socket_factory, write_message, Options, Result, TransferStats, UnlimitedQueue,
+    ID_SIZE, INDEX_SIZE, MAX_RETRIES, RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
 };
 
 mod writer;
 
 type WriterQueue = Arc<SplitQueue>;
+type ConfirmationQueue = UnlimitedQueue<(u32, u64)>;
 
 #[derive(Clone)]
 struct Job {
@@ -32,49 +35,33 @@ struct Job {
 }
 
 pub(crate) async fn main(
-    mut options: Options,
+    options: Options,
     stats: TransferStats,
-    mut control_stream: TcpStream,
+    rts_stream: TcpStream,
+    mut str_stream: TcpStream,
     remote_addr: IpAddr,
 ) -> Result<()> {
-    // TODO what if the source is a directory?
-    if options.destination.file_path.is_dir() {
-        info!("destination is a folder, reformatting path with target file");
-
-        options
-            .destination
-            .file_path
-            .push(options.source.file_path.iter().last().unwrap())
-    }
-
     info!("receiving {} -> {}", options.source, options.destination);
 
-    let partial_path = options.destination.file_path.with_extension("partial");
+    let files: Files = read_message(&mut str_stream).await?;
+    debug!("received files: {:?}", files);
 
-    let start_index = if partial_path.exists() {
-        info!("partial file exists, resuming transfer");
-        let metadata = metadata(&partial_path).await?;
-        // the file is written sequentially, so we can calculate the start index by rounding down to the nearest multiple of the transfer buffer size
-        metadata.len().div_floor(TRANSFER_BUFFER_SIZE as u64) * TRANSFER_BUFFER_SIZE as u64
-    } else {
-        0
-    };
+    // create the local directories needed to write the files
+    for dir in &files.directories {
+        let local_dir = options.destination.file_path.join(dir);
+        debug!("creating directory {:?}", local_dir);
+        create_dir_all(local_dir).await?;
+    }
 
-    stats
-        .confirmed_data
-        .fetch_add(start_index as usize, Relaxed);
-
-    // receive the file size from the remote client
-    let file_size = control_stream.read_u64().await?;
-    stats.total_data.store(file_size as usize, Relaxed);
-    debug!("received file size: {}", file_size);
-
-    // send the start index to the remote client
-    debug!("sending start index {}", start_index);
-    control_stream.write_u64(start_index).await?;
+    // set the total data to be received
+    for details in files.files.values() {
+        stats
+            .total_data
+            .fetch_add(details.file_size as usize, Relaxed);
+    }
 
     let sockets = socket_factory(
-        options.start_port + 1, // the first port is used for control messages
+        options.start_port + 2, // the first two ports are used for control messages and confirmations
         options.end_port,
         remote_addr,
         options.threads,
@@ -84,22 +71,26 @@ pub(crate) async fn main(
     info!("opened sockets");
 
     let writer_queue: WriterQueue = Default::default();
-    let confirmation_queue: UnlimitedQueue<(u32, u64)> = Default::default();
+    let confirmation_queue: ConfirmationQueue = Default::default();
 
-    let writer_handle = tokio::spawn(writer(
-        options.destination.file_path,
-        partial_path.clone(),
-        writer_queue.clone(),
-        file_size,
-        confirmation_queue.clone(),
-        start_index,
-        0,
-    ));
+    // `message_sender` can now be used to send messages to the sender
+    let (message_sender, message_receiver) = async_channel::unbounded();
+    tokio::spawn(crate::message_sender(rts_stream, message_receiver));
 
     let confirmation_handle = tokio::spawn(send_confirmations(
-        control_stream,
+        message_sender.clone(),
+        confirmation_queue.clone(),
+        stats.confirmed_data.clone(),
+    ));
+
+    let controller_handle = tokio::spawn(controller(
+        str_stream,
+        files.clone(),
+        writer_queue.clone(),
         confirmation_queue,
-        stats.confirmed_data,
+        stats.confirmed_data.clone(),
+        options.destination.file_path,
+        message_sender,
     ));
 
     let handles: Vec<_> = sockets
@@ -114,28 +105,28 @@ pub(crate) async fn main(
     };
 
     select! {
-        result = confirmation_handle => error!("confirmation sender failed {:?}", result),
-        result = writer_handle => {
-            info!("writer finished with result {:?}", result);
-        },
-        _ = receiver_future => info!("receiver(s) exited"),
+        result = confirmation_handle => result?,
+        result = controller_handle => result?,
+        _ = receiver_future => { warn!("receiver(s) exited"); Ok(()) },
     }
 
-    Ok(())
+
 }
 
 async fn receiver(queue: WriterQueue, socket: UdpSocket) {
-    let mut buf = [0; INDEX_SIZE + TRANSFER_BUFFER_SIZE]; // buffer for receiving data
+    let mut buf = [0; ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE]; // buffer for receiving data
     let mut retries = 0; // counter to keep track of retries
 
     while retries < MAX_RETRIES {
         match timeout(RECEIVE_TIMEOUT, socket.recv(&mut buf)).await {
             Ok(Ok(read)) if read > 0 => {
                 retries = 0; // reset retries
-                             // TODO let id = ...
-                let id = 0;
-                let index = u64::from_be_bytes(buf[..INDEX_SIZE].try_into().unwrap());
-                let data = buf[INDEX_SIZE..].try_into().unwrap();
+
+                let id = u32::from_be_bytes(buf[..ID_SIZE].try_into().unwrap());
+                let index =
+                    u64::from_be_bytes(buf[ID_SIZE..INDEX_SIZE + ID_SIZE].try_into().unwrap());
+                let data = buf[INDEX_SIZE + ID_SIZE..].try_into().unwrap();
+
                 queue.push(Job { data, index }, id).await;
             }
             Ok(Ok(_)) => warn!("0 byte read?"), // this should never happen
@@ -144,14 +135,90 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) {
     }
 }
 
+async fn controller(
+    mut str_stream: TcpStream,
+    mut files: Files,
+    writer_queue: WriterQueue,
+    confirmation_queue: ConfirmationQueue,
+    confirmed_data: Arc<AtomicUsize>,
+    file_path: PathBuf,
+    message_sender: Sender<Message>,
+) -> Result<()> {
+    loop {
+        let message: Message = read_message(&mut str_stream).await?;
+
+        match message.message {
+            Some(message::Message::Start(message)) => {
+                debug!("received start message: {:?}", message);
+
+                let details = files.files.remove(&message.id).unwrap();
+
+                writer_queue.push_queue(message.id).await; // create a queue for the writer
+
+                let file_path = if file_path.is_dir() {
+                    file_path.join(&details.file_path)
+                } else {
+                    file_path.clone()
+                };
+
+                let partial_path = file_path.with_extension("partial");
+
+                let start_index = if partial_path.exists() {
+                    info!("partial file exists, resuming transfer");
+                    let metadata = metadata(&partial_path).await?;
+                    // the file is written sequentially, so we can calculate the start index by rounding down to the nearest multiple of the transfer buffer size
+                    metadata.len().div_floor(TRANSFER_BUFFER_SIZE as u64)
+                        * TRANSFER_BUFFER_SIZE as u64
+                } else {
+                    0
+                };
+
+                confirmed_data.fetch_add(start_index as usize, Relaxed);
+
+                // send the start index to the remote client
+                write_message(&mut str_stream, &StartIndex { index: start_index }).await?;
+
+                let file = writer::File {
+                    file_size: details.file_size,
+                    partial_path,
+                    path: file_path,
+                };
+
+                // TODO the result of writer is lost
+                tokio::spawn(writer(
+                    file,
+                    writer_queue.clone(),
+                    confirmation_queue.clone(),
+                    start_index,
+                    message.id,
+                    message_sender.clone(),
+                ));
+
+                debug!("started file {:?}", details);
+            }
+            Some(message::Message::Done(_)) => {
+                debug!("received done message");
+                message_sender.close();
+                break;
+            }
+            _ => {
+                error!("received {:?}", message);
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn send_confirmations(
-    mut control_stream: TcpStream,
+    sender: Sender<Message>,
     queue: UnlimitedQueue<(u32, u64)>,
     confirmed_data: Arc<AtomicUsize>,
-) -> io::Result<()> {
+) -> Result<()> {
     let data: Arc<Mutex<Vec<(u32, u64)>>> = Default::default();
 
-    let sender_handle: JoinHandle<io::Result<()>> = tokio::spawn({
+    let sender_handle: JoinHandle<Result<()>> = tokio::spawn({
         let data = data.clone();
 
         async move {
@@ -170,16 +237,23 @@ async fn send_confirmations(
                 let confirmations = mem::take(&mut *data);
                 drop(data); // release the lock on data
 
-                let map: HashMap<u32, Vec<u64>> = HashMap::new();
+                let map: HashMap<u32, ConfirmationIndexes> = HashMap::new();
 
                 // group the confirmations by id
                 let map = confirmations.into_iter().fold(map, |mut map, (id, index)| {
-                    map.entry(id).or_default().push(index);
+                    map.entry(id).or_default().inner.push(index);
                     map
                 });
 
-                // TODO send confirmations
-                // write_indexes(&mut control_stream, &indexes).await?;
+                let message = Message {
+                    message: Some(message::Message::Confirmations(Confirmations {
+                        indexes: map,
+                    })),
+                };
+                sender
+                    .send(message)
+                    .await
+                    .expect("failed to send confirmations");
             }
         }
     });
@@ -197,20 +271,4 @@ async fn send_confirmations(
         result = sender_handle => result?,
         _ = future => Ok(())
     }
-}
-
-// writes an array of u64 values to the control stream
-async fn write_indexes<T: AsyncWrite + Unpin>(
-    control_stream: &mut T,
-    data: &[u64],
-) -> io::Result<()> {
-    let length = data.len() as u64;
-    control_stream.write_u64(length).await?;
-
-    // send the array of u64 values
-    for value in data {
-        control_stream.write_u64(*value).await?;
-    }
-
-    Ok(())
 }

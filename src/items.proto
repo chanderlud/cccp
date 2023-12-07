@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package cccp.items;
+
+message Message {
+  oneof message {
+    Files files = 1;
+    Confirmations confirmations = 2;
+    StartIndex start_index = 3;
+    Start start = 4;
+    End end = 5;
+    Done done = 6;
+  }
+}
+
+message Files {
+  repeated string directories = 1;
+  map<uint32, FileDetail> files = 2; // map for file details
+}
+
+message FileDetail {
+  string file_path = 1;
+  uint64 file_size = 2;
+}
+
+message Confirmations {
+  map<uint32, ConfirmationIndexes> indexes = 1;
+}
+
+message ConfirmationIndexes {
+  repeated uint64 inner = 1;
+}
+
+message StartIndex {
+  uint64 index = 1;
+}
+
+message Start {
+  uint32 id = 1;
+}
+
+message End {
+  uint32 id = 1;
+}
+
+message Done {}
