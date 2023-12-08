@@ -1,6 +1,5 @@
 #![feature(int_roundings)]
 
-use async_channel::Receiver;
 use std::error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
@@ -13,10 +12,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
+use bytesize::ByteSize;
 use clap::Parser;
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
+use kanal::{AsyncReceiver, SendError};
 use log::{debug, error, info, warn, LevelFilter};
 use prost::Message;
 use regex::Regex;
@@ -35,13 +36,16 @@ mod sender;
 type UnlimitedQueue<T> = Arc<deadqueue::unlimited::Queue<T>>;
 type Result<T> = std::result::Result<T, Error>;
 
-const READ_BUFFER_SIZE: usize = 10_000_000;
-const WRITE_BUFFER_SIZE: usize = 5_000_000;
+// read buffer must be a multiple of the transfer buffer to prevent a nasty little bug
+const READ_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
+const WRITE_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
 const TRANSFER_BUFFER_SIZE: usize = 1024;
 const INDEX_SIZE: usize = std::mem::size_of::<u64>();
 const ID_SIZE: usize = std::mem::size_of::<u32>();
 const MAX_RETRIES: usize = 10;
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
+// UDP header + ID + INDEX + DATA
+const PACKET_SIZE: usize = 8 + ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE;
 
 // how long to wait for a job to be confirmed before requeuing it
 const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
@@ -62,6 +66,7 @@ enum ErrorKind {
     Parse(std::net::AddrParseError),
     Decode(prost::DecodeError),
     Join(tokio::task::JoinError),
+    Send(kanal::SendError),
 }
 
 impl From<io::Error> for Error {
@@ -96,6 +101,14 @@ impl From<tokio::task::JoinError> for Error {
     }
 }
 
+impl From<SendError> for Error {
+    fn from(error: SendError) -> Self {
+        Self {
+            kind: ErrorKind::Send(error),
+        }
+    }
+}
+
 impl Termination for Error {
     fn report(self) -> ExitCode {
         ExitCode::from(match self.kind {
@@ -106,6 +119,7 @@ impl Termination for Error {
             ErrorKind::Parse(_) => 3,
             ErrorKind::Decode(_) => 4,
             ErrorKind::Join(_) => 5,
+            ErrorKind::Send(_) => 6,
         })
     }
 }
@@ -115,7 +129,7 @@ struct Options {
     #[clap(
         short,
         long = "mode",
-        help = "local or remote",
+        hide = true, // the user does not need to set this
         default_value = "local"
     )]
     mode: Mode,
@@ -162,10 +176,10 @@ struct Options {
     #[clap(
         short,
         long = "rate",
-        help = "the rate to send data at (bytes per second)",
-        default_value = "1000000"
+        help = "the rate to send data at [b, kb, mb, gb, tb]",
+        default_value = "1mb"
     )]
-    rate: u64,
+    rate: ByteSize,
 
     #[clap(help = "where to get the data from")]
     source: FileLocation,
@@ -179,7 +193,7 @@ impl Options {
         let mode = if sender { "rr" } else { "rs" };
 
         format!(
-            "cccp --mode {} --start-port {} --end-port {} --threads {} --log-level {} --rate {} \"{}\" \"{}\"",
+            "cccp --mode {} --start-port {} --end-port {} --threads {} --log-level {} --rate \"{}\" \"{}\" \"{}\"",
             mode,
             self.start_port,
             self.end_port,
@@ -189,6 +203,10 @@ impl Options {
             self.source,
             self.destination
         )
+    }
+
+    fn pps(&self) -> u64 {
+        self.rate.0 / PACKET_SIZE as u64
     }
 }
 
@@ -361,14 +379,8 @@ async fn main() -> Result<()> {
         }
 
         if options.destination.host.is_none() && options.source.host.is_none() {
-            panic!("at least one host must be specified")
+            panic!("either the source or destination must be remote");
         }
-
-        // UDP header + INDEX + DATA
-        let packet_size = (8 + INDEX_SIZE + TRANSFER_BUFFER_SIZE) as u64;
-        let pps_rate = options.rate / packet_size;
-        debug!("{} byte/s -> {} packet/s", options.rate, pps_rate);
-        options.rate = pps_rate;
     }
 
     let sender = options.source.is_local();
@@ -451,9 +463,10 @@ async fn main() -> Result<()> {
 
             let main_future = async {
                 if sender {
-                    sender::main(options, stats, rts_stream, str_stream, remote_addr).await
+                    sender::main(options, stats.clone(), rts_stream, str_stream, remote_addr).await
                 } else {
-                    receiver::main(options, stats, rts_stream, str_stream, remote_addr).await
+                    receiver::main(options, stats.clone(), rts_stream, str_stream, remote_addr)
+                        .await
                 }
             };
 
@@ -640,7 +653,7 @@ async fn read_message<R: AsyncReadExt + Unpin, M: Message + Default>(reader: &mu
 /// send messages from a channel to a writer
 async fn message_sender<W: AsyncWrite + Unpin, M: Message>(
     mut writer: W,
-    receiver: Receiver<M>,
+    receiver: AsyncReceiver<M>,
 ) -> Result<()> {
     while let Ok(message) = receiver.recv().await {
         write_message(&mut writer, &message).await?;

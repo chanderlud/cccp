@@ -8,7 +8,7 @@ build = "build.rs"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
-tokio = { version = "1.34", features = ["macros", "fs", "io-util"] }
+tokio = { version = "1.34", default-features = false, features = ["macros", "fs", "io-util"] }
 futures = "0.3"
 log = { version = "0.4", features = ["std"] }
 async-ssh2-tokio = "0.8"
@@ -20,7 +20,8 @@ rpassword = "7.3"
 indicatif = "0.17"
 prost = "0.12"
 prost-build = "0.12"
-async-channel = "2.1"
+bytesize = "1.3.0"
+kanal = "0.1.0-pre8"
 
 [build-dependencies]
 prost-build = "0.12.3"

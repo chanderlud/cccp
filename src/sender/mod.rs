@@ -1,5 +1,5 @@
-use async_channel::{Receiver, Sender};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use kanal::{AsyncReceiver, AsyncSender};
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
@@ -27,7 +27,7 @@ use crate::{
 mod reader;
 
 type JobQueue = UnlimitedQueue<Job>;
-type JobCache = Arc<RwLock<BTreeMap<(u32, u64), Job>>>;
+type JobCache = Arc<RwLock<HashMap<(u32, u64), Job>>>;
 
 struct Job {
     data: [u8; ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE],
@@ -65,10 +65,12 @@ pub(crate) async fn main(
                 .to_path_buf();
         }
 
+        let file_path = file.to_string_lossy().replace('\\', "/");
+
         file_map.insert(
             index as u32,
             FileDetail {
-                file_path: file.to_string_lossy().to_string(),
+                file_path,
                 file_size,
             },
         );
@@ -83,6 +85,7 @@ pub(crate) async fn main(
                 dir.to_string_lossy().to_string()
             }
         })
+        .map(|dir| dir.replace('\\', "/"))
         .collect();
 
     let manifest = Manifest {
@@ -110,44 +113,31 @@ pub(crate) async fn main(
 
     // a semaphore to control the send rate
     let send = Arc::new(Semaphore::new(0));
-    // a map of semaphores to control the reads for each file
-    let mut read_semaphores: HashMap<u32, Arc<Semaphore>> = Default::default();
 
-    // create a semaphore for each file
-    for id in manifest.files.keys() {
-        let read = Arc::new(Semaphore::new(1_000));
-        read_semaphores.insert(*id, read);
-    }
+    let read = Arc::new(Semaphore::new(1_000));
 
-    let read_semaphores = Arc::new(read_semaphores);
-
-    let (confirmation_sender, confirmation_receiver) = async_channel::unbounded();
-    let (end_sender, end_receiver) = async_channel::unbounded();
+    let (confirmation_sender, confirmation_receiver) = kanal::unbounded_async();
+    let (end_sender, end_receiver) = kanal::unbounded_async();
 
     tokio::spawn(split_receiver(rts_stream, confirmation_sender, end_sender));
 
-    let confirmation_handle = tokio::spawn({
-        let cache = cache.clone();
-        let queue = queue.clone();
-        let read_semaphores = read_semaphores.clone();
+    let confirmation_handle = tokio::spawn(receive_confirmations(
+        confirmation_receiver,
+        cache.clone(),
+        queue.clone(),
+        stats.confirmed_data.clone(),
+        read.clone(),
+    ));
 
-        receive_confirmations(
-            confirmation_receiver,
-            cache,
-            queue,
-            stats.confirmed_data.clone(),
-            read_semaphores,
-        )
-    });
-
+    let rate = options.pps();
     let semaphore = send.clone();
-    tokio::spawn(add_permits_at_rate(semaphore, options.rate));
+    tokio::spawn(add_permits_at_rate(semaphore, rate));
 
     let controller_handle = tokio::spawn(controller(
         str_stream,
         manifest,
         queue.clone(),
-        read_semaphores,
+        read,
         stats.confirmed_data,
         options.source.file_path,
         end_receiver,
@@ -198,10 +188,10 @@ async fn controller(
     mut control_stream: TcpStream,
     mut files: Manifest,
     job_queue: JobQueue,
-    read_semaphores: Arc<HashMap<u32, Arc<Semaphore>>>,
+    read: Arc<Semaphore>,
     confirmed_data: Arc<AtomicUsize>,
     file_path: PathBuf,
-    end_receiver: Receiver<End>,
+    end_receiver: AsyncReceiver<End>,
 ) -> Result<()> {
     let mut id = 0;
     let mut active = 0;
@@ -211,8 +201,6 @@ async fn controller(
             match files.files.remove(&id) {
                 None => break,
                 Some(file_details) => {
-                    let read = read_semaphores.get(&id).unwrap().clone();
-
                     let message = Message {
                         message: Some(message::Message::Start(Start { id })),
                     };
@@ -221,12 +209,12 @@ async fn controller(
                     let file_path = file_path.join(&file_details.file_path);
 
                     let start_index: StartIndex = read_message(&mut control_stream).await?;
-                    confirmed_data.store(start_index.index as usize, Relaxed);
+                    confirmed_data.fetch_add(start_index.index as usize, Relaxed);
 
                     tokio::spawn(reader(
                         file_path,
                         job_queue.clone(),
-                        read,
+                        read.clone(),
                         start_index.index,
                         id,
                     ));
@@ -237,7 +225,7 @@ async fn controller(
             }
         }
 
-        debug!("started max files, waiting for end message");
+        debug!("waiting for a file to end");
         let end = end_receiver.recv().await.unwrap();
         debug!("received end message: {:?} | active {}", end, active);
         active -= 1;
@@ -258,11 +246,11 @@ async fn controller(
 }
 
 async fn receive_confirmations(
-    confirmation_receiver: Receiver<Confirmations>,
+    confirmation_receiver: AsyncReceiver<Confirmations>,
     cache: JobCache,
     queue: JobQueue,
     confirmed_data: Arc<AtomicUsize>,
-    read_semaphores: Arc<HashMap<u32, Arc<Semaphore>>>,
+    read: Arc<Semaphore>,
 ) -> Result<()> {
     // this solves a problem where a confirmation is received after a job has already been requeued
     let lost_confirmations: Arc<Mutex<HashSet<(u32, u64)>>> = Default::default();
@@ -272,7 +260,7 @@ async fn receive_confirmations(
         let cache = cache.clone();
         let lost_confirmations = lost_confirmations.clone();
         let confirmed_data = confirmed_data.clone();
-        let read_semaphores = read_semaphores.clone();
+        let read = read.clone();
 
         let mut interval = interval(Duration::from_millis(100));
 
@@ -301,7 +289,6 @@ async fn receive_confirmations(
                             // the job is not requeued because it was confirmed while outside the cache
                             lost_confirmations.remove(&key);
 
-                            let read = read_semaphores.get(&key.0).unwrap();
                             read.add_permits(1);
                             confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed);
                         } else {
@@ -319,8 +306,6 @@ async fn receive_confirmations(
         let mut cache = cache.write().await;
 
         for (id, indexes) in confirmations.indexes {
-            let read = read_semaphores.get(&id).unwrap();
-
             // process the array of indexes
             for index in indexes.inner {
                 if cache.remove(&(id, index)).is_none() {
@@ -339,6 +324,8 @@ async fn receive_confirmations(
 
 /// adds leases to the semaphore at a given rate
 async fn add_permits_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
+    debug!("adding permits at rate {}", rate);
+
     let mut interval = interval(Duration::from_nanos(1_000_000_000 / rate));
 
     loop {
@@ -379,8 +366,8 @@ fn files_and_dirs(
 /// split the message stream into `Confirmation` and `End` messages
 async fn split_receiver<R: AsyncReadExt + Unpin>(
     mut reader: R,
-    confirmation_sender: Sender<Confirmations>,
-    end_sender: Sender<End>,
+    confirmation_sender: AsyncSender<Confirmations>,
+    end_sender: AsyncSender<End>,
 ) -> Result<()> {
     loop {
         let message: Message = read_message(&mut reader).await?;

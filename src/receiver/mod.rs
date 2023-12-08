@@ -1,4 +1,4 @@
-use async_channel::Sender;
+use kanal::AsyncSender;
 use std::collections::HashMap;
 use std::mem;
 use std::net::IpAddr;
@@ -79,7 +79,7 @@ pub(crate) async fn main(
     let confirmation_queue: ConfirmationQueue = Default::default();
 
     // `message_sender` can now be used to send messages to the sender
-    let (message_sender, message_receiver) = async_channel::unbounded();
+    let (message_sender, message_receiver) = kanal::unbounded_async();
     tokio::spawn(crate::message_sender(rts_stream, message_receiver));
 
     let confirmation_handle = tokio::spawn(send_confirmations(
@@ -145,7 +145,7 @@ async fn controller(
     confirmation_queue: ConfirmationQueue,
     confirmed_data: Arc<AtomicUsize>,
     file_path: PathBuf,
-    message_sender: Sender<Message>,
+    message_sender: AsyncSender<Message>,
 ) -> Result<()> {
     loop {
         let message: Message = read_message(&mut str_stream).await?;
@@ -164,7 +164,14 @@ async fn controller(
                     file_path.clone()
                 };
 
-                let partial_path = file_path.with_extension("partial");
+                // append partial extension to the existing extension, if there is one
+                let partial_extension = if let Some(extension) = file_path.extension() {
+                    extension.to_str().unwrap().to_owned() + ".partial"
+                } else {
+                    ".partial".to_string()
+                };
+
+                let partial_path = file_path.with_extension(partial_extension);
 
                 let start_index = if partial_path.exists() {
                     info!("partial file exists, resuming transfer");
@@ -187,15 +194,29 @@ async fn controller(
                     path: file_path,
                 };
 
-                // TODO the result of writer is lost
-                tokio::spawn(writer(
-                    file,
-                    writer_queue.clone(),
-                    confirmation_queue.clone(),
-                    start_index,
-                    message.id,
-                    message_sender.clone(),
-                ));
+                tokio::spawn({
+                    let writer_queue = writer_queue.clone();
+                    let confirmation_queue = confirmation_queue.clone();
+                    let message_sender = message_sender.clone();
+
+                    async move {
+                        let path = file.path.clone();
+
+                        let result = writer(
+                            file,
+                            writer_queue,
+                            confirmation_queue,
+                            start_index,
+                            message.id,
+                            message_sender,
+                        )
+                        .await;
+
+                        if let Err(error) = result {
+                            error!("writer for {} failed: {:?}", path.display(), error);
+                        }
+                    }
+                });
 
                 debug!("started file {:?}", details);
             }
@@ -215,7 +236,7 @@ async fn controller(
 }
 
 async fn send_confirmations(
-    sender: Sender<Message>,
+    sender: AsyncSender<Message>,
     queue: UnlimitedQueue<(u32, u64)>,
     confirmed_data: Arc<AtomicUsize>,
 ) -> Result<()> {

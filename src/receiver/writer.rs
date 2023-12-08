@@ -1,7 +1,7 @@
-use async_channel::{SendError, Sender};
 use deadqueue::limited::Queue;
+use kanal::AsyncSender;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 
 use crate::items::{message, End, Message};
 use crate::receiver::{ConfirmationQueue, Job, WriterQueue};
-use crate::{TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
+use crate::{Result, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
 
 #[derive(Default)]
 pub(crate) struct SplitQueue {
@@ -75,8 +75,8 @@ pub(crate) async fn writer(
     confirmation_queue: ConfirmationQueue,
     mut position: u64,
     id: u32,
-    message_sender: Sender<Message>,
-) -> io::Result<()> {
+    message_sender: AsyncSender<Message>,
+) -> Result<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -92,7 +92,7 @@ pub(crate) async fn writer(
         position
     );
 
-    let mut cache: BTreeMap<u64, Job> = BTreeMap::new();
+    let mut cache: HashMap<u64, Job> = HashMap::new();
 
     while position != file_details.file_size {
         let job = writer_queue.pop(&id).await.unwrap();
@@ -136,9 +136,7 @@ pub(crate) async fn writer(
     writer.flush().await?; // flush the writer
     file_details.rename().await?; // rename the file
     writer_queue.pop_queue(&id).await; // remove the queue
-    send_end_message(&message_sender, id)
-        .await
-        .expect("failed to send end message"); // send end message
+    send_end_message(&message_sender, id).await?;
 
     Ok(())
 }
@@ -158,10 +156,11 @@ async fn write_data<T: AsyncWrite + Unpin>(
     writer.write_all(&buffer[..len as usize]).await // write the data
 }
 
-async fn send_end_message(sender: &Sender<Message>, id: u32) -> Result<(), SendError<Message>> {
+async fn send_end_message(sender: &AsyncSender<Message>, id: u32) -> Result<()> {
     let end_message = Message {
         message: Some(message::Message::End(End { id })),
     };
 
-    sender.send(end_message).await
+    sender.send(end_message).await?;
+    Ok(())
 }
