@@ -48,7 +48,6 @@ const PACKET_SIZE: usize = 8 + ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE;
 
 // how long to wait for a job to be confirmed before requeuing it
 const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
-const MAX_CONCURRENT_TRANSFERS: usize = 100;
 
 pub mod items {
     include!(concat!(env!("OUT_DIR"), "/cccp.items.rs"));
@@ -65,7 +64,7 @@ enum ErrorKind {
     Parse(std::net::AddrParseError),
     Decode(prost::DecodeError),
     Join(tokio::task::JoinError),
-    Send(kanal::SendError),
+    Send(SendError),
 }
 
 impl From<io::Error> for Error {
@@ -179,6 +178,14 @@ struct Options {
         default_value = "1mb"
     )]
     rate: ByteSize,
+
+    #[clap(
+        short,
+        long = "max",
+        help = "the maximum number of concurrent transfers",
+        default_value = "100"
+    )]
+    max: usize,
 
     #[clap(help = "where to get the data from")]
     source: FileLocation,

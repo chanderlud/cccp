@@ -20,7 +20,7 @@ use crate::items::{
 use crate::sender::reader::reader;
 use crate::{
     read_message, socket_factory, write_message, Options, Result, TransferStats, ID_SIZE,
-    INDEX_SIZE, MAX_CONCURRENT_TRANSFERS, MAX_RETRIES, REQUEUE_INTERVAL, TRANSFER_BUFFER_SIZE,
+    INDEX_SIZE, MAX_RETRIES, REQUEUE_INTERVAL, TRANSFER_BUFFER_SIZE,
 };
 
 mod reader;
@@ -139,6 +139,7 @@ pub(crate) async fn main(
         stats.confirmed_data,
         options.source.file_path,
         end_receiver,
+        options.max,
     ));
 
     let handles: Vec<_> = sockets
@@ -196,20 +197,22 @@ async fn sender(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn controller(
     mut control_stream: TcpStream,
     mut files: Manifest,
     job_sender: AsyncSender<Job>,
     read: Arc<Semaphore>,
     confirmed_data: Arc<AtomicUsize>,
-    file_path: PathBuf,
+    base_path: PathBuf,
     end_receiver: AsyncReceiver<End>,
+    max: usize,
 ) -> Result<()> {
     let mut id = 0;
     let mut active = 0;
 
     loop {
-        while active < MAX_CONCURRENT_TRANSFERS {
+        while active < max {
             match files.files.remove(&id) {
                 None => break,
                 Some(file_details) => {
@@ -218,7 +221,7 @@ async fn controller(
                     };
                     write_message(&mut control_stream, &message).await?;
 
-                    let file_path = file_path.join(&file_details.file_path);
+                    let file_path = base_path.join(&file_details.file_path);
 
                     let start_index: StartIndex = read_message(&mut control_stream).await?;
                     confirmed_data.fetch_add(start_index.index as usize, Relaxed);
