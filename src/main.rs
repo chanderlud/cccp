@@ -125,7 +125,6 @@ impl Termination for Error {
 #[derive(Parser, Clone, Debug)]
 struct Options {
     #[clap(
-        short,
         long = "mode",
         hide = true, // the user does not need to set this
         default_value = "local"
@@ -363,25 +362,30 @@ async fn main() -> Result<()> {
             panic!("end port must be greater than start port")
         }
 
-        let port_count = options.end_port - options.start_port;
+        let port_count = options.end_port - options.start_port + 1;
 
-        if port_count < options.threads {
+        if port_count < 3 {
+            panic!("a minimum of three ports are required")
+        } else if port_count - 2 < options.threads {
             warn!(
                 "{} ports < {} threads. decreasing threads to {}",
-                port_count, options.threads, port_count
+                port_count - 2,
+                options.threads,
+                port_count - 2
             );
-            options.threads = port_count;
-        } else if port_count < 3 {
-            panic!("a minimum of three ports are required")
-        } else if port_count > options.threads {
+            options.threads = port_count - 2;
+        } else if port_count - 2 > options.threads {
+            let new_end = options.start_port + options.threads + 1;
+
             warn!(
-                "{} ports > {} threads. changing port range to {}-{}",
-                port_count,
+                "{} ports > {} threads. changing to {}-{}",
+                port_count - 2,
                 options.threads,
                 options.start_port,
-                options.start_port + options.threads
+                new_end
             );
-            options.end_port = options.start_port + options.threads;
+
+            options.end_port = new_end;
         }
 
         if options.destination.host.is_none() && options.source.host.is_none() {
