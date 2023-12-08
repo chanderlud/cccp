@@ -1,4 +1,4 @@
-use kanal::AsyncSender;
+use kanal::{AsyncReceiver, AsyncSender};
 use std::collections::HashMap;
 use std::mem;
 use std::net::IpAddr;
@@ -19,14 +19,13 @@ use tokio::time::{interval, timeout};
 use crate::items::{message, ConfirmationIndexes, Confirmations, Manifest, Message, StartIndex};
 use crate::receiver::writer::{writer, SplitQueue};
 use crate::{
-    read_message, socket_factory, write_message, Options, Result, TransferStats, UnlimitedQueue,
-    ID_SIZE, INDEX_SIZE, MAX_RETRIES, RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
+    read_message, socket_factory, write_message, Options, Result, TransferStats, ID_SIZE,
+    INDEX_SIZE, MAX_RETRIES, RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
 };
 
 mod writer;
 
 type WriterQueue = Arc<SplitQueue>;
-type ConfirmationQueue = UnlimitedQueue<(u32, u64)>;
 
 #[derive(Clone)]
 struct Job {
@@ -76,7 +75,7 @@ pub(crate) async fn main(
     info!("opened sockets");
 
     let writer_queue: WriterQueue = Default::default();
-    let confirmation_queue: ConfirmationQueue = Default::default();
+    let (confirmation_sender, confirmation_receiver) = kanal::unbounded_async();
 
     // `message_sender` can now be used to send messages to the sender
     let (message_sender, message_receiver) = kanal::unbounded_async();
@@ -84,7 +83,7 @@ pub(crate) async fn main(
 
     let confirmation_handle = tokio::spawn(send_confirmations(
         message_sender.clone(),
-        confirmation_queue.clone(),
+        confirmation_receiver,
         stats.confirmed_data.clone(),
     ));
 
@@ -92,7 +91,7 @@ pub(crate) async fn main(
         str_stream,
         manifest.clone(),
         writer_queue.clone(),
-        confirmation_queue,
+        confirmation_sender,
         stats.confirmed_data.clone(),
         options.destination.file_path,
         message_sender,
@@ -130,7 +129,7 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) {
                     u64::from_be_bytes(buf[ID_SIZE..INDEX_SIZE + ID_SIZE].try_into().unwrap());
                 let data = buf[INDEX_SIZE + ID_SIZE..].try_into().unwrap();
 
-                queue.push(Job { data, index }, id).await;
+                queue.send(Job { data, index }, id).await;
             }
             Ok(Ok(_)) => warn!("0 byte read?"), // this should never happen
             Ok(Err(_)) | Err(_) => retries += 1, // catch errors and timeouts
@@ -142,7 +141,7 @@ async fn controller(
     mut str_stream: TcpStream,
     mut files: Manifest,
     writer_queue: WriterQueue,
-    confirmation_queue: ConfirmationQueue,
+    confirmation_sender: AsyncSender<(u32, u64)>,
     confirmed_data: Arc<AtomicUsize>,
     file_path: PathBuf,
     message_sender: AsyncSender<Message>,
@@ -188,7 +187,7 @@ async fn controller(
                 // send the start index to the remote client
                 write_message(&mut str_stream, &StartIndex { index: start_index }).await?;
 
-                let file = writer::File {
+                let file = writer::FileDetails {
                     file_size: details.file_size,
                     partial_path,
                     path: file_path,
@@ -196,7 +195,7 @@ async fn controller(
 
                 tokio::spawn({
                     let writer_queue = writer_queue.clone();
-                    let confirmation_queue = confirmation_queue.clone();
+                    let confirmation_sender = confirmation_sender.clone();
                     let message_sender = message_sender.clone();
 
                     async move {
@@ -205,7 +204,7 @@ async fn controller(
                         let result = writer(
                             file,
                             writer_queue,
-                            confirmation_queue,
+                            confirmation_sender,
                             start_index,
                             message.id,
                             message_sender,
@@ -237,7 +236,7 @@ async fn controller(
 
 async fn send_confirmations(
     sender: AsyncSender<Message>,
-    queue: UnlimitedQueue<(u32, u64)>,
+    confirmation_receiver: AsyncReceiver<(u32, u64)>,
     confirmed_data: Arc<AtomicUsize>,
 ) -> Result<()> {
     let data: Arc<Mutex<Vec<(u32, u64)>>> = Default::default();
@@ -283,8 +282,7 @@ async fn send_confirmations(
     });
 
     let future = async {
-        loop {
-            let confirmation = queue.pop().await; // wait for a confirmation
+        while let Ok(confirmation) = confirmation_receiver.recv().await {
             confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed); // increment the confirmed data counter
             data.lock().await.push(confirmation); // push the index to the data vector
         }

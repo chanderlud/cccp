@@ -32,8 +32,7 @@ use tokio::{io, select};
 mod receiver;
 mod sender;
 
-// type aliases used throughout
-type UnlimitedQueue<T> = Arc<deadqueue::unlimited::Queue<T>>;
+// result alias used throughout
 type Result<T> = std::result::Result<T, Error>;
 
 // read buffer must be a multiple of the transfer buffer to prevent a nasty little bug

@@ -1,18 +1,19 @@
+use kanal::AsyncSender;
 use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use log::debug;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader, Result};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio::sync::Semaphore;
 
-use crate::sender::{Job, JobQueue};
-use crate::{ID_SIZE, INDEX_SIZE, READ_BUFFER_SIZE, TRANSFER_BUFFER_SIZE};
+use crate::sender::Job;
+use crate::{Result, ID_SIZE, INDEX_SIZE, READ_BUFFER_SIZE, TRANSFER_BUFFER_SIZE};
 
 pub(crate) async fn reader(
     path: PathBuf,
-    queue: JobQueue,
+    queue: AsyncSender<Job>,
     read: Arc<Semaphore>,
     mut index: u64,
     id: u32,
@@ -41,12 +42,14 @@ pub(crate) async fn reader(
         }
 
         // push job to queue
-        queue.push(Job {
-            data: buffer,
-            index,
-            id,
-            cached_at: None,
-        });
+        queue
+            .send(Job {
+                data: buffer,
+                index,
+                id,
+                cached_at: None,
+            })
+            .await?;
 
         index += read as u64; // increment index by bytes read
         permit.forget(); // release permit

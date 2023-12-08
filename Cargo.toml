@@ -13,7 +13,6 @@ futures = "0.3"
 log = { version = "0.4", features = ["std"] }
 async-ssh2-tokio = "0.8"
 simple-logging = "2.0"
-deadqueue = "0.2"
 regex = "1.10"
 dirs = "5.0"
 rpassword = "7.3"

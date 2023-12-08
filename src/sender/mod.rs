@@ -19,14 +19,12 @@ use crate::items::{
 };
 use crate::sender::reader::reader;
 use crate::{
-    read_message, socket_factory, write_message, Options, Result, TransferStats, UnlimitedQueue,
-    ID_SIZE, INDEX_SIZE, MAX_CONCURRENT_TRANSFERS, MAX_RETRIES, REQUEUE_INTERVAL,
-    TRANSFER_BUFFER_SIZE,
+    read_message, socket_factory, write_message, Options, Result, TransferStats, ID_SIZE,
+    INDEX_SIZE, MAX_CONCURRENT_TRANSFERS, MAX_RETRIES, REQUEUE_INTERVAL, TRANSFER_BUFFER_SIZE,
 };
 
 mod reader;
 
-type JobQueue = UnlimitedQueue<Job>;
 type JobCache = Arc<RwLock<HashMap<(u32, u64), Job>>>;
 
 struct Job {
@@ -107,7 +105,7 @@ pub(crate) async fn main(
     info!("opened sockets");
 
     // the reader fills the queue to 1_000 jobs, the unlimited capacity allows unconfirmed jobs to be added instantly
-    let queue: JobQueue = Default::default();
+    let (job_sender, job_receiver) = kanal::unbounded_async();
     // a cache for the file chunks that have been sent but not confirmed
     let cache: JobCache = Default::default();
 
@@ -124,7 +122,7 @@ pub(crate) async fn main(
     let confirmation_handle = tokio::spawn(receive_confirmations(
         confirmation_receiver,
         cache.clone(),
-        queue.clone(),
+        job_sender.clone(),
         stats.confirmed_data.clone(),
         read.clone(),
     ));
@@ -136,7 +134,7 @@ pub(crate) async fn main(
     let controller_handle = tokio::spawn(controller(
         str_stream,
         manifest,
-        queue.clone(),
+        job_sender.clone(),
         read,
         stats.confirmed_data,
         options.source.file_path,
@@ -145,7 +143,15 @@ pub(crate) async fn main(
 
     let handles: Vec<_> = sockets
         .into_iter()
-        .map(|socket| tokio::spawn(sender(queue.clone(), socket, cache.clone(), send.clone())))
+        .map(|socket| {
+            tokio::spawn(sender(
+                job_receiver.clone(),
+                job_sender.clone(),
+                socket,
+                cache.clone(),
+                send.clone(),
+            ))
+        })
         .collect();
 
     let sender_future = async {
@@ -161,17 +167,23 @@ pub(crate) async fn main(
     }
 }
 
-async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<Semaphore>) {
+async fn sender(
+    job_receiver: AsyncReceiver<Job>,
+    job_sender: AsyncSender<Job>,
+    socket: UdpSocket,
+    cache: JobCache,
+    send: Arc<Semaphore>,
+) {
     let mut retries = 0;
 
     while retries < MAX_RETRIES {
         let permit = send.acquire().await.unwrap(); // acquire a permit
-        let mut job = queue.pop().await; // get the next job
+        let mut job = job_receiver.recv().await.unwrap(); // get a job from the queue
 
         // send the job data to the socket
         if let Err(error) = socket.send(&job.data).await {
             error!("failed to send data: {}", error);
-            queue.push(job); // put the job back in the queue
+            job_sender.send(job).await.unwrap(); // put the job back in the queue
             retries += 1;
         } else {
             // cache the job
@@ -187,7 +199,7 @@ async fn sender(queue: JobQueue, socket: UdpSocket, cache: JobCache, send: Arc<S
 async fn controller(
     mut control_stream: TcpStream,
     mut files: Manifest,
-    job_queue: JobQueue,
+    job_sender: AsyncSender<Job>,
     read: Arc<Semaphore>,
     confirmed_data: Arc<AtomicUsize>,
     file_path: PathBuf,
@@ -213,7 +225,7 @@ async fn controller(
 
                     tokio::spawn(reader(
                         file_path,
-                        job_queue.clone(),
+                        job_sender.clone(),
                         read.clone(),
                         start_index.index,
                         id,
@@ -248,7 +260,7 @@ async fn controller(
 async fn receive_confirmations(
     confirmation_receiver: AsyncReceiver<Confirmations>,
     cache: JobCache,
-    queue: JobQueue,
+    job_sender: AsyncSender<Job>,
     confirmed_data: Arc<AtomicUsize>,
     read: Arc<Semaphore>,
 ) -> Result<()> {
@@ -293,7 +305,7 @@ async fn receive_confirmations(
                             confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed);
                         } else {
                             unconfirmed.cached_at = None;
-                            queue.push(unconfirmed);
+                            job_sender.send(unconfirmed).await.unwrap();
                         }
                     }
                 }
@@ -374,14 +386,9 @@ async fn split_receiver<R: AsyncReadExt + Unpin>(
 
         match message.message {
             Some(message::Message::Confirmations(confirmations)) => {
-                confirmation_sender
-                    .send(confirmations)
-                    .await
-                    .expect("failed to send confirmations");
+                confirmation_sender.send(confirmations).await?
             }
-            Some(message::Message::End(end)) => {
-                end_sender.send(end).await.expect("failed to send end");
-            }
+            Some(message::Message::End(end)) => end_sender.send(end).await?,
             _ => {
                 error!("received {:?}", message);
             }
