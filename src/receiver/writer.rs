@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::items::{message, End, Message};
 use crate::receiver::{Job, WriterQueue};
-use crate::{Result, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
+use crate::{Error, Result, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
 
 #[derive(Default)]
 pub(crate) struct SplitQueue {
@@ -32,24 +32,17 @@ impl SplitQueue {
         self.senders.write().await.remove(id);
     }
 
+    pub(crate) async fn get_receiver(&self, id: &u32) -> Option<AsyncReceiver<Job>> {
+        let receivers = self.receivers.read().await;
+        receivers.get(id).cloned()
+    }
+
+    // TODO if the the receiver fills, the sender will block & block push_queue
     pub(crate) async fn send(&self, job: Job, id: u32) {
         let senders = self.senders.read().await;
 
         if let Some(sender) = senders.get(&id) {
             sender.send(job).await.unwrap();
-        }
-    }
-
-    pub(crate) async fn recv(&self, id: &u32) -> Option<Job> {
-        let receiver = {
-            let inner = self.receivers.read().await;
-            inner.get(id).cloned()
-        };
-
-        if let Some(receiver) = receiver {
-            receiver.recv().await.ok()
-        } else {
-            None
         }
     }
 }
@@ -92,9 +85,13 @@ pub(crate) async fn writer(
     );
 
     let mut cache: HashMap<u64, Job> = HashMap::new();
+    let receiver = writer_queue
+        .get_receiver(&id)
+        .await
+        .ok_or(Error::missing_queue())?;
 
     while position != details.file_size {
-        let job = writer_queue.recv(&id).await.unwrap();
+        let job = receiver.recv().await?;
 
         match job.index.cmp(&position) {
             // if the chunk is behind the current position, it was already written

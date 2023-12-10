@@ -17,7 +17,7 @@ use clap::Parser;
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
-use kanal::{AsyncReceiver, SendError};
+use kanal::{AsyncReceiver, ReceiveError, SendError};
 use log::{debug, error, info, warn, LevelFilter};
 use prost::Message;
 use regex::Regex;
@@ -65,6 +65,8 @@ enum ErrorKind {
     Decode(prost::DecodeError),
     Join(tokio::task::JoinError),
     Send(SendError),
+    Receive(ReceiveError),
+    MissingQueue,
 }
 
 impl From<io::Error> for Error {
@@ -107,6 +109,14 @@ impl From<SendError> for Error {
     }
 }
 
+impl From<ReceiveError> for Error {
+    fn from(error: ReceiveError) -> Self {
+        Self {
+            kind: ErrorKind::Receive(error),
+        }
+    }
+}
+
 impl Termination for Error {
     fn report(self) -> ExitCode {
         ExitCode::from(match self.kind {
@@ -118,7 +128,17 @@ impl Termination for Error {
             ErrorKind::Decode(_) => 4,
             ErrorKind::Join(_) => 5,
             ErrorKind::Send(_) => 6,
+            ErrorKind::Receive(_) => 7,
+            ErrorKind::MissingQueue => 7,
         })
+    }
+}
+
+impl Error {
+    fn missing_queue() -> Self {
+        Self {
+            kind: ErrorKind::MissingQueue,
+        }
     }
 }
 
