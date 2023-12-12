@@ -9,38 +9,53 @@ message Message {
     StartIndex start_index = 3;
     Start start = 4;
     End end = 5;
-    Done done = 6;
+    Failure failure = 6;
+    Done done = 7;
   }
 }
 
+// the sender provides these details to the receiver
 message Manifest {
   repeated string directories = 1;
   map<uint32, FileDetail> files = 2; // map for file details
 }
 
 message FileDetail {
-  string file_path = 1;
-  uint64 file_size = 2;
+  string path = 1; // file path relative to the destination directory
+  uint64 size = 2; // file size in bytes
+  optional bytes signature = 3; // blake3 hash of file
 }
 
+// map of transfers and their confirmed indexes
 message Confirmations {
   map<uint32, ConfirmationIndexes> indexes = 1;
 }
 
+// the confirmed indexes
 message ConfirmationIndexes {
   repeated uint64 inner = 1;
 }
 
+// the receiver tells the sender which index it wants to start at
 message StartIndex {
   uint64 index = 1;
 }
 
+// signals the receiver that the sender wants to start a transfer
 message Start {
   uint32 id = 1;
 }
 
+// signals the the sender that the receiver has finished receiving the transfer
 message End {
   uint32 id = 1;
 }
 
+// signals the sender that the receiver has failed to receive the transfer
+message Failure {
+  uint32 id = 1;
+  uint32 reason = 2;
+}
+
+// signals the receiver that the sender won't start new transfers
 message Done {}

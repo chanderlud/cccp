@@ -5,45 +5,49 @@ use std::path::PathBuf;
 
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, info};
-use tokio::fs::{rename, OpenOptions};
+use tokio::fs::{remove_file, rename, OpenOptions};
 use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufWriter};
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 
-use crate::items::{message, End, Message};
+use crate::items::Message;
 use crate::receiver::{Job, WriterQueue};
-use crate::{Error, Result, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
+use crate::{hash_file, Error, Result, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
 
 #[derive(Default)]
 pub(crate) struct SplitQueue {
-    senders: RwLock<HashMap<u32, AsyncSender<Job>>>,
-    receivers: RwLock<HashMap<u32, AsyncReceiver<Job>>>,
+    senders: Mutex<HashMap<u32, AsyncSender<Job>>>,
+    receivers: Mutex<HashMap<u32, AsyncReceiver<Job>>>,
 }
 
 impl SplitQueue {
     pub(crate) async fn push_queue(&self, id: u32) {
         let (sender, receiver) = kanal::bounded_async(1_000);
 
-        self.receivers.write().await.insert(id, receiver);
-        self.senders.write().await.insert(id, sender);
+        self.receivers.lock().await.insert(id, receiver);
+        self.senders.lock().await.insert(id, sender);
     }
 
     pub(crate) async fn pop_queue(&self, id: &u32) {
-        self.receivers.write().await.remove(id);
-        self.senders.write().await.remove(id);
+        self.receivers.lock().await.remove(id);
+        self.senders.lock().await.remove(id);
     }
 
     pub(crate) async fn get_receiver(&self, id: &u32) -> Option<AsyncReceiver<Job>> {
-        let receivers = self.receivers.read().await;
+        let receivers = self.receivers.lock().await;
         receivers.get(id).cloned()
     }
 
-    // TODO if the the receiver fills, the sender will block & block push_queue
-    pub(crate) async fn send(&self, job: Job, id: u32) {
-        let senders = self.senders.read().await;
+    pub(crate) async fn send(&self, job: Job, id: u32) -> Result<()> {
+        let sender_option = {
+            let senders = self.senders.lock().await;
+            senders.get(&id).cloned()
+        };
 
-        if let Some(sender) = senders.get(&id) {
-            sender.send(job).await.unwrap();
+        if let Some(sender) = sender_option {
+            sender.send(job).await?;
         }
+
+        Ok(())
     }
 }
 
@@ -51,7 +55,8 @@ impl SplitQueue {
 pub(crate) struct FileDetails {
     pub(crate) path: PathBuf,
     pub(crate) partial_path: PathBuf,
-    pub(crate) file_size: u64,
+    pub(crate) size: u64,
+    pub(crate) signature: Option<Vec<u8>>,
 }
 
 impl FileDetails {
@@ -90,7 +95,7 @@ pub(crate) async fn writer(
         .await
         .ok_or(Error::missing_queue())?;
 
-    while position != details.file_size {
+    while position != details.size {
         let job = receiver.recv().await?;
 
         match job.index.cmp(&position) {
@@ -104,23 +109,38 @@ pub(crate) async fn writer(
             }
             // if the chunk is at the current position, write it
             Ordering::Equal => {
-                write_data(&mut writer, &job.data, &mut position, details.file_size).await?;
+                write_data(&mut writer, &job.data, &mut position, details.size).await?;
                 confirmation_sender.send((id, job.index)).await?;
             }
         }
 
         // write all concurrent chunks from the cache
         while let Some(job) = cache.remove(&position) {
-            write_data(&mut writer, &job.data, &mut position, details.file_size).await?;
+            write_data(&mut writer, &job.data, &mut position, details.size).await?;
         }
     }
 
     info!("writer wrote all expected bytes");
 
     writer.flush().await?; // flush the writer
+
+    // verify the signature if provided by the sender
+    if let Some(ref remote_signature) = details.signature {
+        let local_hash = hash_file(&details.partial_path).await?; // hash the file
+
+        if local_hash.as_bytes() != &remote_signature[..] {
+            message_sender.send(Message::failure(id, 0)).await?; // notify the sender
+            remove_file(&details.partial_path).await?; // remove the partial file
+            writer_queue.pop_queue(&id).await; // remove the queue
+            return Err(Error::failure(0));
+        } else {
+            info!("{:?} passed signature verification", details.path)
+        }
+    }
+
     details.rename().await?; // rename the file
     writer_queue.pop_queue(&id).await; // remove the queue
-    send_end_message(&message_sender, id).await?;
+    message_sender.send(Message::end(id)).await?; // send the end message
 
     Ok(())
 }
@@ -138,13 +158,4 @@ async fn write_data<T: AsyncWrite + Unpin>(
 
     *position += len; // advance the position
     writer.write_all(&buffer[..len as usize]).await // write the data
-}
-
-async fn send_end_message(sender: &AsyncSender<Message>, id: u32) -> Result<()> {
-    let end_message = Message {
-        message: Some(message::Message::End(End { id })),
-    };
-
-    sender.send(end_message).await?;
-    Ok(())
 }

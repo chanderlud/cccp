@@ -3,7 +3,7 @@
 use std::error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Termination};
 use std::str::FromStr;
 use std::sync::atomic::AtomicUsize;
@@ -12,23 +12,26 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
+use blake3::{Hash, Hasher};
 use bytesize::ByteSize;
 use clap::Parser;
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
-use kanal::{AsyncReceiver, ReceiveError, SendError};
+use kanal::{ReceiveError, SendError};
 use log::{debug, error, info, warn, LevelFilter};
 use prost::Message;
 use regex::Regex;
 use rpassword::prompt_password;
 use simple_logging::{log_to_file, log_to_stderr};
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
+use tokio::sync::AcquireError;
 use tokio::time::{interval, sleep};
 use tokio::{io, select};
 
+mod items;
 mod receiver;
 mod sender;
 
@@ -49,10 +52,6 @@ const PACKET_SIZE: usize = 8 + ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE;
 // how long to wait for a job to be confirmed before requeuing it
 const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
 
-pub mod items {
-    include!(concat!(env!("OUT_DIR"), "/cccp.items.rs"));
-}
-
 #[derive(Debug)]
 struct Error {
     kind: ErrorKind,
@@ -66,7 +65,10 @@ enum ErrorKind {
     Join(tokio::task::JoinError),
     Send(SendError),
     Receive(ReceiveError),
+    Acquire(AcquireError),
     MissingQueue,
+    MaxRetries,
+    Failure(u32),
 }
 
 impl From<io::Error> for Error {
@@ -117,6 +119,14 @@ impl From<ReceiveError> for Error {
     }
 }
 
+impl From<AcquireError> for Error {
+    fn from(error: AcquireError) -> Self {
+        Self {
+            kind: ErrorKind::Acquire(error),
+        }
+    }
+}
+
 impl Termination for Error {
     fn report(self) -> ExitCode {
         ExitCode::from(match self.kind {
@@ -129,7 +139,8 @@ impl Termination for Error {
             ErrorKind::Join(_) => 5,
             ErrorKind::Send(_) => 6,
             ErrorKind::Receive(_) => 7,
-            ErrorKind::MissingQueue => 7,
+            ErrorKind::Acquire(_) => 8,
+            _ => 9,
         })
     }
 }
@@ -138,6 +149,18 @@ impl Error {
     fn missing_queue() -> Self {
         Self {
             kind: ErrorKind::MissingQueue,
+        }
+    }
+
+    fn max_retries() -> Self {
+        Self {
+            kind: ErrorKind::MaxRetries,
+        }
+    }
+
+    fn failure(reason: u32) -> Self {
+        Self {
+            kind: ErrorKind::Failure(reason),
         }
     }
 }
@@ -186,7 +209,7 @@ struct Options {
     #[clap(
         short,
         long = "bind-address",
-        help = "manually specify the address to listen on"
+        help = "manually specify the bind address"
     )]
     bind_address: Option<IpAddr>,
 
@@ -205,6 +228,13 @@ struct Options {
         default_value = "100"
     )]
     max: usize,
+
+    #[clap(
+        short,
+        long = "verify",
+        help = "verify integrity of files using blake3"
+    )]
+    verify: bool,
 
     #[clap(help = "where to get the data from")]
     source: FileLocation,
@@ -680,14 +710,22 @@ async fn read_message<R: AsyncReadExt + Unpin, M: Message + Default>(reader: &mu
     Ok(message)
 }
 
-/// send messages from a channel to a writer
-async fn message_sender<W: AsyncWrite + Unpin, M: Message>(
-    mut writer: W,
-    receiver: AsyncReceiver<M>,
-) -> Result<()> {
-    while let Ok(message) = receiver.recv().await {
-        write_message(&mut writer, &message).await?;
+async fn hash_file<P: AsRef<Path>>(path: P) -> io::Result<Hash> {
+    let file = File::open(path).await?;
+    let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
+    let mut buffer = [0; 2048];
+
+    let mut hasher = Hasher::new();
+
+    loop {
+        let read = reader.read(&mut buffer).await?;
+
+        if read != 0 {
+            hasher.update(&buffer[..read]);
+        } else {
+            break;
+        }
     }
 
-    Ok(())
+    Ok(hasher.finalize())
 }

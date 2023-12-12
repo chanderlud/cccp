@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use log::{debug, error, info, warn};
 use tokio::fs::{create_dir_all, metadata};
+use tokio::io::AsyncWrite;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::select;
 use tokio::sync::Mutex;
@@ -19,7 +20,7 @@ use tokio::time::{interval, timeout};
 use crate::items::{message, ConfirmationIndexes, Confirmations, Manifest, Message, StartIndex};
 use crate::receiver::writer::{writer, SplitQueue};
 use crate::{
-    read_message, socket_factory, write_message, Options, Result, TransferStats, ID_SIZE,
+    read_message, socket_factory, write_message, Error, Options, Result, TransferStats, ID_SIZE,
     INDEX_SIZE, MAX_RETRIES, RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
 };
 
@@ -59,9 +60,7 @@ pub(crate) async fn main(
 
     // set the total data to be received
     for details in manifest.files.values() {
-        stats
-            .total_data
-            .fetch_add(details.file_size as usize, Relaxed);
+        stats.total_data.fetch_add(details.size as usize, Relaxed);
     }
 
     let sockets = socket_factory(
@@ -79,7 +78,7 @@ pub(crate) async fn main(
 
     // `message_sender` can now be used to send messages to the sender
     let (message_sender, message_receiver) = kanal::unbounded_async();
-    tokio::spawn(crate::message_sender(rts_stream, message_receiver));
+    tokio::spawn(send_messages(rts_stream, message_receiver));
 
     let confirmation_handle = tokio::spawn(send_confirmations(
         message_sender.clone(),
@@ -104,18 +103,20 @@ pub(crate) async fn main(
 
     let receiver_future = async {
         for handle in handles {
-            _ = handle.await;
+            handle.await??;
         }
+
+        Ok(())
     };
 
     select! {
         result = confirmation_handle => result?,
         result = controller_handle => result?,
-        _ = receiver_future => { warn!("receiver(s) exited"); Ok(()) },
+        result = receiver_future => result,
     }
 }
 
-async fn receiver(queue: WriterQueue, socket: UdpSocket) {
+async fn receiver(queue: WriterQueue, socket: UdpSocket) -> Result<()> {
     let mut buf = [0; ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE]; // buffer for receiving data
     let mut retries = 0; // counter to keep track of retries
 
@@ -129,11 +130,17 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) {
                     u64::from_be_bytes(buf[ID_SIZE..INDEX_SIZE + ID_SIZE].try_into().unwrap());
                 let data = buf[INDEX_SIZE + ID_SIZE..].try_into().unwrap();
 
-                queue.send(Job { data, index }, id).await;
+                queue.send(Job { data, index }, id).await?;
             }
             Ok(Ok(_)) => warn!("0 byte read?"), // this should never happen
             Ok(Err(_)) | Err(_) => retries += 1, // catch errors and timeouts
         }
+    }
+
+    if retries == MAX_RETRIES {
+        Err(Error::max_retries())
+    } else {
+        Ok(())
     }
 }
 
@@ -158,7 +165,7 @@ async fn controller(
                 writer_queue.push_queue(message.id).await; // create a queue for the writer
 
                 let file_path = if file_path.is_dir() {
-                    file_path.join(&details.file_path)
+                    file_path.join(&details.path)
                 } else {
                     file_path.clone()
                 };
@@ -188,9 +195,10 @@ async fn controller(
                 write_message(&mut str_stream, &StartIndex { index: start_index }).await?;
 
                 let file = writer::FileDetails {
-                    file_size: details.file_size,
+                    size: details.size,
                     partial_path,
                     path: file_path,
+                    signature: details.signature,
                 };
 
                 tokio::spawn({
@@ -216,8 +224,6 @@ async fn controller(
                         }
                     }
                 });
-
-                debug!("started file {:?}", details);
             }
             Some(message::Message::Done(_)) => {
                 debug!("received done message");
@@ -293,4 +299,16 @@ async fn send_confirmations(
         result = sender_handle => result?,
         _ = future => Ok(())
     }
+}
+
+/// send messages from a channel to a writer
+async fn send_messages<W: AsyncWrite + Unpin, M: prost::Message>(
+    mut writer: W,
+    receiver: AsyncReceiver<M>,
+) -> Result<()> {
+    while let Ok(message) = receiver.recv().await {
+        write_message(&mut writer, &message).await?;
+    }
+
+    Ok(())
 }

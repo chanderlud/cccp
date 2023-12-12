@@ -1,6 +1,6 @@
 [package]
 name = "cccp"
-version = "0.4.0"
+version = "0.6.0"
 edition = "2021"
 build = "build.rs"
 
@@ -18,9 +18,9 @@ dirs = "5.0"
 rpassword = "7.3"
 indicatif = "0.17"
 prost = "0.12"
-prost-build = "0.12"
 bytesize = "1.3.0"
 kanal = "0.1.0-pre8"
+blake3 = "1.5.0"
 
 [build-dependencies]
 prost-build = "0.12.3"

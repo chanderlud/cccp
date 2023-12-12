@@ -14,13 +14,11 @@ use tokio::select;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{interval, Instant};
 
-use crate::items::{
-    message, Confirmations, Done, End, FileDetail, Manifest, Message, Start, StartIndex,
-};
+use crate::items::{message, Confirmations, FileDetail, Manifest, Message, StartIndex};
 use crate::sender::reader::reader;
 use crate::{
-    read_message, socket_factory, write_message, Options, Result, TransferStats, ID_SIZE,
-    INDEX_SIZE, MAX_RETRIES, REQUEUE_INTERVAL, TRANSFER_BUFFER_SIZE,
+    hash_file, read_message, socket_factory, write_message, Error, Options, Result, TransferStats,
+    ID_SIZE, INDEX_SIZE, MAX_RETRIES, REQUEUE_INTERVAL, TRANSFER_BUFFER_SIZE,
 };
 
 mod reader;
@@ -43,53 +41,12 @@ pub(crate) async fn main(
 ) -> Result<()> {
     info!("sending {} -> {}", options.source, options.destination);
 
-    // collect the files and directories to send
-    let mut files = Vec::new();
-    let mut dirs = Vec::new();
-    files_and_dirs(&options.source.file_path, &mut files, &mut dirs)?;
-
-    let mut file_map: HashMap<u32, FileDetail> = HashMap::with_capacity(files.len());
-
-    for (index, mut file) in files.into_iter().enumerate() {
-        let file_size = tokio::fs::metadata(&file).await?.len();
-        stats.total_data.fetch_add(file_size as usize, Relaxed);
-
-        if file == options.source.file_path {
-            file = PathBuf::from(file.iter().last().unwrap())
-        } else {
-            file = file
-                .strip_prefix(&options.source.file_path)
-                .unwrap()
-                .to_path_buf();
-        }
-
-        let file_path = file.to_string_lossy().replace('\\', "/");
-
-        file_map.insert(
-            index as u32,
-            FileDetail {
-                file_path,
-                file_size,
-            },
-        );
-    }
-
-    let directories = dirs
-        .into_iter()
-        .map(|dir| {
-            if let Ok(file_path) = dir.strip_prefix(&options.source.file_path) {
-                file_path.to_string_lossy().to_string()
-            } else {
-                dir.to_string_lossy().to_string()
-            }
-        })
-        .map(|dir| dir.replace('\\', "/"))
-        .collect();
-
-    let manifest = Manifest {
-        directories,
-        files: file_map,
-    };
+    let manifest = build_manifest(
+        options.source.file_path.clone(),
+        options.verify,
+        &stats.total_data,
+    )
+    .await?;
 
     debug!("sending manifest: {:?}", manifest);
     write_message(&mut str_stream, &manifest).await?;
@@ -111,13 +68,20 @@ pub(crate) async fn main(
 
     // a semaphore to control the send rate
     let send = Arc::new(Semaphore::new(0));
-
+    // a semaphore to control the readers
     let read = Arc::new(Semaphore::new(1_000));
 
+    // just confirmation messages
     let (confirmation_sender, confirmation_receiver) = kanal::unbounded_async();
-    let (end_sender, end_receiver) = kanal::unbounded_async();
+    // end and failure messages
+    let (controller_sender, controller_receiver) = kanal::unbounded_async();
 
-    tokio::spawn(split_receiver(rts_stream, confirmation_sender, end_sender));
+    // receive messages from the receiver into two channels based on message type
+    let receiver_handle = tokio::spawn(split_receiver(
+        rts_stream,
+        confirmation_sender,
+        controller_sender,
+    ));
 
     let confirmation_handle = tokio::spawn(receive_confirmations(
         confirmation_receiver,
@@ -127,9 +91,7 @@ pub(crate) async fn main(
         read.clone(),
     ));
 
-    let rate = options.pps();
-    let semaphore = send.clone();
-    tokio::spawn(add_permits_at_rate(semaphore, rate));
+    tokio::spawn(add_permits_at_rate(send.clone(), options.pps()));
 
     let controller_handle = tokio::spawn(controller(
         str_stream,
@@ -138,7 +100,7 @@ pub(crate) async fn main(
         read,
         stats.confirmed_data,
         options.source.file_path,
-        end_receiver,
+        controller_receiver,
         options.max,
     ));
 
@@ -157,14 +119,18 @@ pub(crate) async fn main(
 
     let sender_future = async {
         for handle in handles {
-            _ = handle.await;
+            handle.await??; // propagate errors
         }
+
+        Ok(())
     };
 
+    // propagate the first error
     select! {
         result = confirmation_handle => result?,
         result = controller_handle => result?,
-        _ = sender_future => { warn!("senders exited"); Ok(()) },
+        result = sender_future => result,
+        result = receiver_handle => result?,
     }
 }
 
@@ -174,17 +140,17 @@ async fn sender(
     socket: UdpSocket,
     cache: JobCache,
     send: Arc<Semaphore>,
-) {
+) -> Result<()> {
     let mut retries = 0;
 
     while retries < MAX_RETRIES {
-        let permit = send.acquire().await.unwrap(); // acquire a permit
-        let mut job = job_receiver.recv().await.unwrap(); // get a job from the queue
+        let permit = send.acquire().await?; // acquire a permit
+        let mut job = job_receiver.recv().await?; // get a job from the queue
 
         // send the job data to the socket
         if let Err(error) = socket.send(&job.data).await {
             error!("failed to send data: {}", error);
-            job_sender.send(job).await.unwrap(); // put the job back in the queue
+            job_sender.send(job).await?; // put the job back in the queue
             retries += 1;
         } else {
             // cache the job
@@ -194,6 +160,12 @@ async fn sender(
         }
 
         permit.forget();
+    }
+
+    if retries == MAX_RETRIES {
+        Err(Error::max_retries())
+    } else {
+        Ok(())
     }
 }
 
@@ -205,7 +177,7 @@ async fn controller(
     read: Arc<Semaphore>,
     confirmed_data: Arc<AtomicUsize>,
     base_path: PathBuf,
-    end_receiver: AsyncReceiver<End>,
+    controller_receiver: AsyncReceiver<Message>,
     max: usize,
 ) -> Result<()> {
     let mut id = 0;
@@ -213,26 +185,19 @@ async fn controller(
 
     loop {
         while active < max {
-            match files.files.remove(&id) {
+            match files.files.get(&id) {
                 None => break,
                 Some(file_details) => {
-                    let message = Message {
-                        message: Some(message::Message::Start(Start { id })),
-                    };
-                    write_message(&mut control_stream, &message).await?;
-
-                    let file_path = base_path.join(&file_details.file_path);
-
-                    let start_index: StartIndex = read_message(&mut control_stream).await?;
-                    confirmed_data.fetch_add(start_index.index as usize, Relaxed);
-
-                    tokio::spawn(reader(
-                        file_path,
-                        job_sender.clone(),
-                        read.clone(),
-                        start_index.index,
+                    start_file_transfer(
+                        &mut control_stream,
                         id,
-                    ));
+                        file_details,
+                        &base_path,
+                        &job_sender,
+                        &read,
+                        &confirmed_data,
+                    )
+                    .await?;
 
                     id += 1;
                     active += 1;
@@ -240,10 +205,35 @@ async fn controller(
             }
         }
 
-        debug!("waiting for a file to end");
-        let end = end_receiver.recv().await.unwrap();
-        debug!("received end message: {:?} | active {}", end, active);
-        active -= 1;
+        debug!("waiting for a message");
+
+        match controller_receiver.recv().await?.message {
+            Some(message::Message::End(end)) => {
+                debug!("received end message {} | active {}", end.id, active);
+
+                files.files.remove(&end.id);
+                active -= 1;
+            }
+            Some(message::Message::Failure(failure)) => {
+                debug!("received failure message {:?}", failure);
+
+                if let Some(file_details) = files.files.get(&failure.id) {
+                    start_file_transfer(
+                        &mut control_stream,
+                        failure.id,
+                        file_details,
+                        &base_path,
+                        &job_sender,
+                        &read,
+                        &confirmed_data,
+                    )
+                    .await?;
+                } else {
+                    warn!("received failure message for unknown file {}", failure.id);
+                }
+            }
+            _ => unreachable!(), // only end and failure messages are sent to this receiver
+        }
 
         if files.files.is_empty() && active == 0 {
             break;
@@ -251,11 +241,34 @@ async fn controller(
     }
 
     debug!("all files completed, sending done message");
+    write_message(&mut control_stream, &Message::done()).await?;
 
-    let message = Message {
-        message: Some(message::Message::Done(Done {})),
-    };
-    write_message(&mut control_stream, &message).await?;
+    Ok(())
+}
+
+async fn start_file_transfer(
+    mut control_stream: &mut TcpStream,
+    id: u32,
+    file_details: &FileDetail,
+    base_path: &PathBuf,
+    job_sender: &AsyncSender<Job>,
+    read: &Arc<Semaphore>,
+    confirmed_data: &Arc<AtomicUsize>,
+) -> Result<()> {
+    write_message(&mut control_stream, &Message::start(id)).await?;
+
+    let file_path = base_path.join(&file_details.path);
+
+    let start_index: StartIndex = read_message(&mut control_stream).await?;
+    confirmed_data.fetch_add(start_index.index as usize, Relaxed);
+
+    tokio::spawn(reader(
+        file_path,
+        job_sender.clone(),
+        read.clone(),
+        start_index.index,
+        id,
+    ));
 
     Ok(())
 }
@@ -378,11 +391,11 @@ fn files_and_dirs(
     Ok(())
 }
 
-/// split the message stream into `Confirmation` and `End` messages
+/// split the message stream into `Confirmation` and `End + Failure` messages
 async fn split_receiver<R: AsyncReadExt + Unpin>(
     mut reader: R,
     confirmation_sender: AsyncSender<Confirmations>,
-    end_sender: AsyncSender<End>,
+    controller_sender: AsyncSender<Message>,
 ) -> Result<()> {
     loop {
         let message: Message = read_message(&mut reader).await?;
@@ -391,10 +404,72 @@ async fn split_receiver<R: AsyncReadExt + Unpin>(
             Some(message::Message::Confirmations(confirmations)) => {
                 confirmation_sender.send(confirmations).await?
             }
-            Some(message::Message::End(end)) => end_sender.send(end).await?,
+            Some(message::Message::End(_)) => controller_sender.send(message).await?,
+            Some(message::Message::Failure(_)) => controller_sender.send(message).await?,
             _ => {
                 error!("received {:?}", message);
             }
         }
     }
+}
+
+async fn build_manifest(
+    source: PathBuf,
+    verify: bool,
+    total_data: &Arc<AtomicUsize>,
+) -> Result<Manifest> {
+    // collect the files and directories to send
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    files_and_dirs(&source, &mut files, &mut dirs)?;
+
+    let mut file_map: HashMap<u32, FileDetail> = HashMap::with_capacity(files.len());
+
+    for (index, mut file) in files.into_iter().enumerate() {
+        let size = tokio::fs::metadata(&file).await?.len();
+        total_data.fetch_add(size as usize, Relaxed);
+
+        let signature = if verify {
+            let hash = hash_file(&file).await?;
+            Some(hash.as_bytes().to_vec())
+        } else {
+            None
+        };
+
+        if file == source {
+            file = PathBuf::from(file.iter().last().unwrap())
+        } else {
+            file = file.strip_prefix(&source).unwrap().to_path_buf();
+        }
+
+        let path = file.to_string_lossy().replace('\\', "/");
+
+        file_map.insert(
+            index as u32,
+            FileDetail {
+                path,
+                size,
+                signature,
+            },
+        );
+    }
+
+    let directories = dirs
+        .into_iter()
+        .map(|dir| {
+            if let Ok(file_path) = dir.strip_prefix(&source) {
+                file_path.to_string_lossy().to_string()
+            } else {
+                dir.to_string_lossy().to_string()
+            }
+        })
+        .map(|dir| dir.replace('\\', "/"))
+        .collect();
+
+    let manifest = Manifest {
+        directories,
+        files: file_map,
+    };
+
+    Ok(manifest)
 }
