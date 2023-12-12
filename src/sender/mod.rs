@@ -250,7 +250,7 @@ async fn start_file_transfer(
     mut control_stream: &mut TcpStream,
     id: u32,
     file_details: &FileDetail,
-    base_path: &PathBuf,
+    base_path: &Path,
     job_sender: &AsyncSender<Job>,
     read: &Arc<Semaphore>,
     confirmed_data: &Arc<AtomicUsize>,
