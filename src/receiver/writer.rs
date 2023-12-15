@@ -58,9 +58,11 @@ impl SplitQueue {
 /// stores file details for writer
 #[derive(Clone)]
 pub(crate) struct FileDetails {
+    pub(crate) id: u32,
     pub(crate) path: PathBuf,
     pub(crate) partial_path: PathBuf,
     pub(crate) size: u64,
+    pub(crate) start_index: u64,
     pub(crate) signature: Option<Vec<u8>>,
     pub(crate) crypto: Option<Crypto>,
 }
@@ -72,12 +74,10 @@ impl FileDetails {
     }
 }
 
-pub(crate) async fn writer<C: StreamCipherExt + ?Sized>(
+pub(crate) async fn writer(
     details: FileDetails,
     writer_queue: WriterQueue,
     confirmation_sender: AsyncSender<(u32, u64)>,
-    mut position: u64,
-    id: u32,
     message_sender: AsyncSender<Message>,
 ) -> Result<()> {
     let file = OpenOptions::new()
@@ -85,6 +85,8 @@ pub(crate) async fn writer<C: StreamCipherExt + ?Sized>(
         .create(true)
         .open(&details.partial_path)
         .await?;
+
+    let mut position = details.start_index;
 
     let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
     writer.seek(SeekFrom::Start(position)).await?; // seek to the initial position
@@ -103,7 +105,7 @@ pub(crate) async fn writer<C: StreamCipherExt + ?Sized>(
 
     let mut cache: HashMap<u64, Job> = HashMap::new();
     let receiver = writer_queue
-        .get_receiver(&id)
+        .get_receiver(&details.id)
         .await
         .ok_or(Error::missing_queue())?;
 
@@ -115,7 +117,7 @@ pub(crate) async fn writer<C: StreamCipherExt + ?Sized>(
             Ordering::Less => continue,
             // if the chunk is ahead of the current position, save it for later
             Ordering::Greater => {
-                confirmation_sender.send((id, job.index)).await?;
+                confirmation_sender.send((details.id, job.index)).await?;
                 cache.insert(job.index, job);
                 continue;
             }
@@ -129,7 +131,7 @@ pub(crate) async fn writer<C: StreamCipherExt + ?Sized>(
                     &mut cipher,
                 )
                 .await?;
-                confirmation_sender.send((id, job.index)).await?;
+                confirmation_sender.send((details.id, job.index)).await?;
             }
         }
 
@@ -149,15 +151,15 @@ pub(crate) async fn writer<C: StreamCipherExt + ?Sized>(
     info!("writer wrote all expected bytes");
 
     writer.flush().await?; // flush the writer
+    writer_queue.pop_queue(&details.id).await; // remove the queue
 
     // verify the signature if provided by the sender
     if let Some(ref remote_signature) = details.signature {
         let local_hash = hash_file(&details.partial_path).await?; // hash the file
 
         if local_hash.as_bytes() != &remote_signature[..] {
-            message_sender.send(Message::failure(id, 0)).await?; // notify the sender
+            message_sender.send(Message::failure(details.id, 0)).await?; // notify the sender
             remove_file(&details.partial_path).await?; // remove the partial file
-            writer_queue.pop_queue(&id).await; // remove the queue
             return Err(Error::failure(0));
         } else {
             info!("{:?} passed signature verification", details.path)
@@ -165,8 +167,7 @@ pub(crate) async fn writer<C: StreamCipherExt + ?Sized>(
     }
 
     details.rename().await?; // rename the file
-    writer_queue.pop_queue(&id).await; // remove the queue
-    message_sender.send(Message::end(id)).await?; // send the end message
+    message_sender.send(Message::end(details.id)).await?; // send the end message
 
     Ok(())
 }

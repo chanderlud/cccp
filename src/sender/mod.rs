@@ -325,7 +325,8 @@ async fn start_file_transfer<C: StreamCipherExt + ?Sized>(
                 start_index.index,
                 id,
                 details.crypto.as_ref().map(make_cipher),
-            ).await;
+            )
+            .await;
 
             if let Err(error) = result {
                 error!("reader failed: {:?}", error);

@@ -1,3 +1,4 @@
+use futures::stream::iter;
 use std::collections::HashMap;
 use std::mem;
 use std::net::IpAddr;
@@ -7,6 +8,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, error, info, warn};
 use tokio::fs::{create_dir_all, metadata};
@@ -51,12 +53,9 @@ pub(crate) async fn main(
     let is_dir = manifest.files.len() > 1; // if multiple files are being received, the destination should be a directory
     debug!("received manifest: {:?}", manifest);
 
-    let mut completed = Vec::new();
+    let completed = Arc::new(Mutex::new(Vec::new()));
 
-    // TODO get start indexes here and never add them to total_data
-    let files = manifest
-        .files
-        .into_iter()
+    let files = iter(manifest.files.into_iter())
         .filter_map(|(id, details)| {
             // formats the path to the file locally
             let path = if is_dir {
@@ -65,35 +64,52 @@ pub(crate) async fn main(
                 options.destination.file_path.clone()
             };
 
-            if path.exists() && !options.overwrite {
-                completed.push(id);
-                None
-            } else {
-                // increment the total data counter
-                stats.total_data.fetch_add(details.size as usize, Relaxed);
+            let total_data = stats.total_data.clone();
+            let completed = completed.clone();
 
-                // append partial extension to the existing extension, if there is one
-                let partial_extension = if let Some(extension) = path.extension() {
-                    extension.to_str()?.to_owned() + ".partial"
+            async move {
+                if path.exists() && !options.overwrite {
+                    completed.lock().await.push(id);
+                    None
                 } else {
-                    ".partial".to_string()
-                };
+                    // append partial extension to the existing extension, if there is one
+                    let partial_extension = if let Some(extension) = path.extension() {
+                        extension.to_str()?.to_owned() + ".partial"
+                    } else {
+                        ".partial".to_string()
+                    };
 
-                let partial_path = path.with_extension(partial_extension);
+                    let partial_path = path.with_extension(partial_extension);
 
-                Some((
-                    id,
-                    FileDetails {
-                        path,
-                        partial_path,
-                        size: details.size,
-                        signature: details.signature,
-                        crypto: details.crypto,
-                    },
-                ))
+                    let start_index = if partial_path.exists() {
+                        let metadata = metadata(&partial_path).await.ok()?;
+                        // the file is written sequentially, so we can calculate the start index by rounding down to the nearest multiple of the transfer buffer size
+                        let chunks = metadata.len().div_floor(TRANSFER_BUFFER_SIZE as u64);
+                        chunks * TRANSFER_BUFFER_SIZE as u64
+                    } else {
+                        0
+                    };
+
+                    // increment the total data counter
+                    total_data.fetch_add((details.size - start_index) as usize, Relaxed);
+
+                    Some((
+                        id,
+                        FileDetails {
+                            id,
+                            path,
+                            partial_path,
+                            size: details.size,
+                            start_index,
+                            signature: details.signature,
+                            crypto: details.crypto,
+                        },
+                    ))
+                }
             }
         })
-        .collect();
+        .collect()
+        .await;
 
     let free_space = free_space(&options.destination.file_path)?;
     debug!("free space: {}", free_space);
@@ -110,6 +126,8 @@ pub(crate) async fn main(
         return Err(Error::failure(1));
     }
 
+    let completed = completed.lock().await.clone();
+
     debug!("sending completed: {:?}", completed);
     // send the completed message to the remote client
     write_message(
@@ -119,7 +137,9 @@ pub(crate) async fn main(
     )
     .await?;
 
+    // if the destination is a directory, create it
     if is_dir {
+        debug!("creating directory {:?}", options.destination.file_path);
         create_dir_all(&options.destination.file_path).await?;
     }
 
@@ -150,7 +170,7 @@ pub(crate) async fn main(
     let confirmation_handle = tokio::spawn(send_confirmations(
         message_sender.clone(),
         confirmation_receiver,
-        stats.confirmed_data.clone(),
+        stats.confirmed_data,
     ));
 
     let controller_handle = tokio::spawn(controller(
@@ -158,7 +178,6 @@ pub(crate) async fn main(
         files,
         writer_queue.clone(),
         confirmation_sender,
-        stats.confirmed_data,
         message_sender,
         str_cipher,
     ));
@@ -216,7 +235,6 @@ async fn controller<C: StreamCipherExt + ?Sized>(
     files: HashMap<u32, FileDetails>,
     writer_queue: WriterQueue,
     confirmation_sender: AsyncSender<(u32, u64)>,
-    confirmed_data: Arc<AtomicUsize>,
     message_sender: AsyncSender<Message>,
     mut str_cipher: Box<C>,
 ) -> Result<()> {
@@ -235,43 +253,25 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                     }
                 };
 
-                let start_index = if details.partial_path.exists() {
-                    info!("partial file exists, resuming transfer");
-                    let metadata = metadata(&details.partial_path).await?;
-                    // the file is written sequentially, so we can calculate the start index by rounding down to the nearest multiple of the transfer buffer size
-                    let chunks = metadata.len().div_floor(TRANSFER_BUFFER_SIZE as u64);
-                    chunks * TRANSFER_BUFFER_SIZE as u64
-                } else {
-                    0
-                };
-
+                // TODO there is an edge case here where the transfer fails & this start_index is no longer valid
                 // send the start index to the remote client
                 write_message(
                     &mut str_stream,
-                    &StartIndex::new(start_index),
+                    &StartIndex::new(details.start_index),
                     &mut str_cipher,
                 )
                 .await?;
 
                 writer_queue.push_queue(message.id).await; // create a queue for the writer
-                confirmed_data.fetch_add(start_index as usize, Relaxed);
 
                 tokio::spawn({
-                    let writer_queue = writer_queue.clone();
-                    let confirmation_sender = confirmation_sender.clone();
-                    let message_sender = message_sender.clone();
+                    let queue = writer_queue.clone();
+                    let confirmation = confirmation_sender.clone();
+                    let message = message_sender.clone();
                     let details = details.clone();
 
                     async move {
-                        let result = writer::<C>(
-                            details,
-                            writer_queue,
-                            confirmation_sender,
-                            start_index,
-                            message.id,
-                            message_sender,
-                        )
-                        .await;
+                        let result = writer(details, queue, confirmation, message).await;
 
                         if let Err(error) = result {
                             error!("writer failed: {:?}", error);
