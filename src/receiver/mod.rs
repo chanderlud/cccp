@@ -213,7 +213,7 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) -> Result<()> {
 
 async fn controller<C: StreamCipherExt + ?Sized>(
     mut str_stream: TcpStream,
-    mut files: HashMap<u32, FileDetails>,
+    files: HashMap<u32, FileDetails>,
     writer_queue: WriterQueue,
     confirmation_sender: AsyncSender<(u32, u64)>,
     confirmed_data: Arc<AtomicUsize>,
@@ -227,7 +227,13 @@ async fn controller<C: StreamCipherExt + ?Sized>(
             Some(message::Message::Start(message)) => {
                 debug!("received start message: {:?}", message);
 
-                let details = files.remove(&message.id).unwrap();
+                let details = match files.get(&message.id) {
+                    Some(details) => details,
+                    None => {
+                        error!("received start message for unknown id {}", message.id);
+                        continue;
+                    }
+                };
 
                 let start_index = if details.partial_path.exists() {
                     info!("partial file exists, resuming transfer");
@@ -254,6 +260,7 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                     let writer_queue = writer_queue.clone();
                     let confirmation_sender = confirmation_sender.clone();
                     let message_sender = message_sender.clone();
+                    let details = details.clone();
 
                     async move {
                         let result = writer::<C>(

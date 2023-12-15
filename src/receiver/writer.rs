@@ -56,6 +56,7 @@ impl SplitQueue {
 }
 
 /// stores file details for writer
+#[derive(Clone)]
 pub(crate) struct FileDetails {
     pub(crate) path: PathBuf,
     pub(crate) partial_path: PathBuf,

@@ -212,29 +212,27 @@ async fn controller<C: StreamCipherExt + ?Sized>(
     mut cipher: Box<C>,
 ) -> Result<()> {
     let mut id = 0;
-    let mut active = 0;
+    let mut active: HashMap<u32, FileDetail> = HashMap::with_capacity(max);
 
     loop {
-        if !files.is_empty() {
-            while active < max {
-                match files.get(&id) {
-                    None => id += 1,
-                    Some(details) => {
-                        start_file_transfer(
-                            &mut control_stream,
-                            id,
-                            details,
-                            &base_path,
-                            &job_sender,
-                            &read,
-                            &confirmed_data,
-                            &mut cipher,
-                        )
-                        .await?;
+        while active.len() < max && !files.is_empty() {
+            match files.remove(&id) {
+                None => id += 1,
+                Some(details) => {
+                    start_file_transfer(
+                        &mut control_stream,
+                        id,
+                        &details,
+                        &base_path,
+                        &job_sender,
+                        &read,
+                        &confirmed_data,
+                        &mut cipher,
+                    )
+                    .await?;
 
-                        active += 1;
-                        id += 1
-                    }
+                    active.insert(id, details);
+                    id += 1
                 }
             }
         }
@@ -243,14 +241,15 @@ async fn controller<C: StreamCipherExt + ?Sized>(
 
         match controller_receiver.recv().await?.message {
             Some(message::Message::End(end)) => {
-                debug!("received end message {} | active {}", end.id, active);
-
-                files.remove(&end.id);
-                active -= 1;
+                if active.remove(&end.id).is_none() {
+                    warn!("received end message for unknown file {}", end.id);
+                } else {
+                    debug!("received end message {} | active {}", end.id, active.len());
+                }
             }
             Some(message::Message::Failure(failure)) => {
                 if failure.reason == 0 {
-                    if let Some(details) = files.get(&failure.id) {
+                    if let Some(details) = active.get(&failure.id) {
                         warn!(
                             "transfer {} failed signature verification, retrying...",
                             failure.id
@@ -277,7 +276,7 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                     }
                 } else {
                     warn!(
-                        "received failure message {} for unknown file {}",
+                        "received unknown failure message {} for {}",
                         failure.reason, failure.id
                     );
                 }
@@ -285,7 +284,7 @@ async fn controller<C: StreamCipherExt + ?Sized>(
             _ => unreachable!(), // only end and failure messages are sent to this receiver
         }
 
-        if files.is_empty() && active == 0 {
+        if files.is_empty() && active.is_empty() {
             break;
         }
     }
@@ -312,14 +311,27 @@ async fn start_file_transfer<C: StreamCipherExt + ?Sized>(
     let start_index: StartIndex = read_message(&mut control_stream, cipher).await?;
     confirmed_data.fetch_add(start_index.index as usize, Relaxed);
 
-    tokio::spawn(reader(
-        base_path.join(&details.path),
-        job_sender.clone(),
-        read.clone(),
-        start_index.index,
-        id,
-        details.crypto.as_ref().map(make_cipher),
-    ));
+    tokio::spawn({
+        let job_sender = job_sender.clone();
+        let read = read.clone();
+        let details = details.clone();
+        let base_path = base_path.to_path_buf();
+
+        async move {
+            let result = reader(
+                base_path.join(&details.path),
+                job_sender,
+                read,
+                start_index.index,
+                id,
+                details.crypto.as_ref().map(make_cipher),
+            ).await;
+
+            if let Err(error) = result {
+                error!("reader failed: {:?}", error);
+            }
+        }
+    });
 
     Ok(())
 }

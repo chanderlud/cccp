@@ -731,6 +731,7 @@ async fn write_message<W: AsyncWrite + Unpin, M: Message, C: StreamCipherExt + ?
 
     writer.write_all(&buffer).await?;
 
+    debug!("sent message: {:?}", message);
     Ok(())
 }
 
@@ -750,6 +751,7 @@ async fn read_message<
     cipher.apply_keystream(&mut buffer[..]);
 
     let message = M::decode(&buffer[..])?;
+    debug!("received message: {:?}", message);
 
     Ok(message)
 }
