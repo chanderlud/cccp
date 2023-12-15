@@ -51,11 +51,11 @@ pub(crate) async fn main(
 
     let manifest: Manifest = read_message(&mut str_stream, &mut str_cipher).await?;
     let is_dir = manifest.files.len() > 1; // if multiple files are being received, the destination should be a directory
-    debug!("received manifest: {:?}", manifest);
+    debug!("received manifest | files={} dirs={}", manifest.files.len(), manifest.directories.len());
 
     let completed = Arc::new(Mutex::new(Vec::new()));
 
-    let files = iter(manifest.files.into_iter())
+    let files: HashMap<u32, FileDetails> = iter(manifest.files.into_iter())
         .filter_map(|(id, details)| {
             // formats the path to the file locally
             let path = if is_dir {
@@ -111,6 +111,10 @@ pub(crate) async fn main(
         .collect()
         .await;
 
+    let completed = completed.lock().await.clone();
+    debug!("processed files | files={} completed={}", files.len(), completed.len());
+
+    debug!("trying to get free space...");
     let free_space = free_space(&options.destination.file_path)?;
     debug!("free space: {}", free_space);
 
@@ -125,8 +129,6 @@ pub(crate) async fn main(
 
         return Err(Error::failure(1));
     }
-
-    let completed = completed.lock().await.clone();
 
     debug!("sending completed: {:?}", completed);
     // send the completed message to the remote client

@@ -56,7 +56,7 @@ pub(crate) async fn main(
     )
     .await?;
 
-    debug!("sending manifest: {:?}", manifest);
+    debug!("sending manifest | files={} dirs={}", manifest.files.len(), manifest.directories.len());
     write_message(&mut str_stream, &manifest, &mut str_cipher).await?;
 
     let message: Message = read_message(&mut str_stream, &mut str_cipher).await?;

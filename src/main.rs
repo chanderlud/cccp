@@ -499,13 +499,10 @@ async fn main() -> Result<()> {
             debug!("local {}", local);
             debug!("remote {}", remote);
 
-            let mut auth_method = match ssh_key_auth().await {
-                Ok(auth) => auth,
-                Err(error) => {
-                    warn!("failed to use ssh key auth: {}", error);
-                    password_auth().unwrap()
-                }
-            };
+            let mut auth_method = ssh_key_auth().await.unwrap_or_else(|error| {
+                warn!("failed to use ssh key auth: {}", error);
+                password_auth().unwrap()
+            });
 
             let remote_addr: IpAddr = remote.host.as_ref().unwrap().parse().unwrap();
 
@@ -520,7 +517,7 @@ async fn main() -> Result<()> {
                 {
                     Ok(client) => break client,
                     Err(error) => {
-                        warn!("failed to connect to local host: {}", error);
+                        warn!("failed to connect to remote host: {}", error);
 
                         match error {
                             async_ssh2_tokio::error::Error::KeyAuthFailed => {
