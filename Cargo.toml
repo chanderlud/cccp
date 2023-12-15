@@ -3,6 +3,8 @@ name = "cccp"
 version = "0.6.0"
 edition = "2021"
 build = "build.rs"
+repository = "https://github.com/chanderlud/cccp"
+authors = ["Chander Luderman <me@chanchan.dev>"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,7 +22,21 @@ indicatif = "0.17"
 prost = "0.12"
 bytesize = "1.3.0"
 kanal = "0.1.0-pre8"
-blake3 = "1.5.0"
+blake3 = "1.5"
+chacha20 = "0.9"
+rand = "0.8"
+hex = "0.4"
+ctr = "0.9"
+aes = "0.8"
+itertools = "0.12"
+libc = "0.2.151"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.151"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52.0", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+widestring = "1.0.2"
 
 [build-dependencies]
 prost-build = "0.12.3"

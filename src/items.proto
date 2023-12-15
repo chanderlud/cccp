@@ -11,6 +11,7 @@ message Message {
     End end = 5;
     Failure failure = 6;
     Done done = 7;
+    Completed completed = 8;
   }
 }
 
@@ -24,6 +25,24 @@ message FileDetail {
   string path = 1; // file path relative to the destination directory
   uint64 size = 2; // file size in bytes
   optional bytes signature = 3; // blake3 hash of file
+  optional Crypto crypto = 4; // encryption details
+}
+
+message Crypto {
+  Cipher cipher = 1;
+  bytes key = 2;
+  bytes iv = 3;
+}
+
+enum Cipher {
+  AES = 0;
+  CHACHA8 = 1;
+  CHACHA20 = 2;
+}
+
+// the receiver already had these files
+message Completed {
+  repeated uint32 ids = 1;
 }
 
 // map of transfers and their confirmed indexes

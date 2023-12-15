@@ -9,9 +9,12 @@ use tokio::fs::{remove_file, rename, OpenOptions};
 use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
-use crate::items::Message;
+use crate::error::Error;
+use crate::items::{Crypto, Message};
 use crate::receiver::{Job, WriterQueue};
-use crate::{hash_file, Error, Result, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
+use crate::{
+    hash_file, make_cipher, Result, StreamCipherExt, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE,
+};
 
 #[derive(Default)]
 pub(crate) struct SplitQueue {
@@ -37,6 +40,7 @@ impl SplitQueue {
         receivers.get(id).cloned()
     }
 
+    // TODO benchmark this
     pub(crate) async fn send(&self, job: Job, id: u32) -> Result<()> {
         let sender_option = {
             let senders = self.senders.lock().await;
@@ -57,6 +61,7 @@ pub(crate) struct FileDetails {
     pub(crate) partial_path: PathBuf,
     pub(crate) size: u64,
     pub(crate) signature: Option<Vec<u8>>,
+    pub(crate) crypto: Option<Crypto>,
 }
 
 impl FileDetails {
@@ -66,7 +71,7 @@ impl FileDetails {
     }
 }
 
-pub(crate) async fn writer(
+pub(crate) async fn writer<C: StreamCipherExt + ?Sized>(
     details: FileDetails,
     writer_queue: WriterQueue,
     confirmation_sender: AsyncSender<(u32, u64)>,
@@ -82,6 +87,12 @@ pub(crate) async fn writer(
 
     let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
     writer.seek(SeekFrom::Start(position)).await?; // seek to the initial position
+
+    let mut cipher = details.crypto.as_ref().map(make_cipher);
+
+    if let Some(ref mut cipher) = cipher {
+        cipher.seek(position);
+    }
 
     debug!(
         "writer for {} starting at {}",
@@ -109,14 +120,28 @@ pub(crate) async fn writer(
             }
             // if the chunk is at the current position, write it
             Ordering::Equal => {
-                write_data(&mut writer, &job.data, &mut position, details.size).await?;
+                write_data(
+                    &mut writer,
+                    job.data,
+                    &mut position,
+                    details.size,
+                    &mut cipher,
+                )
+                .await?;
                 confirmation_sender.send((id, job.index)).await?;
             }
         }
 
         // write all concurrent chunks from the cache
         while let Some(job) = cache.remove(&position) {
-            write_data(&mut writer, &job.data, &mut position, details.size).await?;
+            write_data(
+                &mut writer,
+                job.data,
+                &mut position,
+                details.size,
+                &mut cipher,
+            )
+            .await?;
         }
     }
 
@@ -147,14 +172,19 @@ pub(crate) async fn writer(
 
 /// write data and advance position
 #[inline]
-async fn write_data<T: AsyncWrite + Unpin>(
+async fn write_data<T: AsyncWrite + Unpin, C: StreamCipherExt + ?Sized>(
     writer: &mut T,
-    buffer: &[u8],
+    mut buffer: [u8; TRANSFER_BUFFER_SIZE],
     position: &mut u64,
     file_size: u64,
+    cipher: &mut Option<Box<C>>,
 ) -> io::Result<()> {
     // calculate the length of the data to write
     let len = (file_size - *position).min(TRANSFER_BUFFER_SIZE as u64);
+
+    if let Some(ref mut cipher) = cipher {
+        cipher.apply_keystream(&mut buffer[..len as usize]);
+    }
 
     *position += len; // advance the position
     writer.write_all(&buffer[..len as usize]).await // write the data

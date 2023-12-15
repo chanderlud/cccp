@@ -1,42 +1,83 @@
 #![feature(int_roundings)]
 
-use std::error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::process::{ExitCode, Termination};
 use std::str::FromStr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
+use aes::Aes256;
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
 use blake3::{Hash, Hasher};
 use bytesize::ByteSize;
+use chacha20::cipher::generic_array::GenericArray;
+use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+use chacha20::{ChaCha20, ChaCha8};
 use clap::Parser;
+use ctr::Ctr128BE;
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
-use kanal::{ReceiveError, SendError};
+use itertools::Itertools;
 use log::{debug, error, info, warn, LevelFilter};
 use prost::Message;
+use rand::{rngs::OsRng, RngCore};
 use regex::Regex;
 use rpassword::prompt_password;
 use simple_logging::{log_to_file, log_to_stderr};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
-use tokio::sync::AcquireError;
 use tokio::time::{interval, sleep};
 use tokio::{io, select};
 
+use crate::items::{Cipher, Crypto};
+
+mod error;
 mod items;
 mod receiver;
 mod sender;
 
 // result alias used throughout
-type Result<T> = std::result::Result<T, Error>;
+type Result<T> = std::result::Result<T, error::Error>;
+
+pub(crate) trait StreamCipherExt: Send + Sync {
+    fn seek(&mut self, index: u64);
+    fn apply_keystream(&mut self, data: &mut [u8]);
+}
+
+impl StreamCipherExt for ChaCha20 {
+    fn seek(&mut self, index: u64) {
+        StreamCipherSeek::seek(self, index);
+    }
+
+    fn apply_keystream(&mut self, buf: &mut [u8]) {
+        StreamCipher::apply_keystream(self, buf)
+    }
+}
+
+impl StreamCipherExt for ChaCha8 {
+    fn seek(&mut self, index: u64) {
+        StreamCipherSeek::seek(self, index);
+    }
+
+    fn apply_keystream(&mut self, buf: &mut [u8]) {
+        StreamCipher::apply_keystream(self, buf)
+    }
+}
+
+impl StreamCipherExt for Ctr128BE<Aes256> {
+    fn seek(&mut self, index: u64) {
+        StreamCipherSeek::seek(self, index);
+    }
+
+    fn apply_keystream(&mut self, buf: &mut [u8]) {
+        StreamCipher::apply_keystream(self, buf)
+    }
+}
 
 // read buffer must be a multiple of the transfer buffer to prevent a nasty little bug
 const READ_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
@@ -52,119 +93,6 @@ const PACKET_SIZE: usize = 8 + ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE;
 // how long to wait for a job to be confirmed before requeuing it
 const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
 
-#[derive(Debug)]
-struct Error {
-    kind: ErrorKind,
-}
-
-#[derive(Debug)]
-enum ErrorKind {
-    Io(io::Error),
-    Parse(std::net::AddrParseError),
-    Decode(prost::DecodeError),
-    Join(tokio::task::JoinError),
-    Send(SendError),
-    Receive(ReceiveError),
-    Acquire(AcquireError),
-    MissingQueue,
-    MaxRetries,
-    Failure(u32),
-}
-
-impl From<io::Error> for Error {
-    fn from(error: io::Error) -> Self {
-        Self {
-            kind: ErrorKind::Io(error),
-        }
-    }
-}
-
-impl From<std::net::AddrParseError> for Error {
-    fn from(error: std::net::AddrParseError) -> Self {
-        Self {
-            kind: ErrorKind::Parse(error),
-        }
-    }
-}
-
-impl From<prost::DecodeError> for Error {
-    fn from(error: prost::DecodeError) -> Self {
-        Self {
-            kind: ErrorKind::Decode(error),
-        }
-    }
-}
-
-impl From<tokio::task::JoinError> for Error {
-    fn from(error: tokio::task::JoinError) -> Self {
-        Self {
-            kind: ErrorKind::Join(error),
-        }
-    }
-}
-
-impl From<SendError> for Error {
-    fn from(error: SendError) -> Self {
-        Self {
-            kind: ErrorKind::Send(error),
-        }
-    }
-}
-
-impl From<ReceiveError> for Error {
-    fn from(error: ReceiveError) -> Self {
-        Self {
-            kind: ErrorKind::Receive(error),
-        }
-    }
-}
-
-impl From<AcquireError> for Error {
-    fn from(error: AcquireError) -> Self {
-        Self {
-            kind: ErrorKind::Acquire(error),
-        }
-    }
-}
-
-impl Termination for Error {
-    fn report(self) -> ExitCode {
-        ExitCode::from(match self.kind {
-            ErrorKind::Io(error) => match error.kind() {
-                io::ErrorKind::NotFound => 1,
-                _ => 2,
-            },
-            ErrorKind::Parse(_) => 3,
-            ErrorKind::Decode(_) => 4,
-            ErrorKind::Join(_) => 5,
-            ErrorKind::Send(_) => 6,
-            ErrorKind::Receive(_) => 7,
-            ErrorKind::Acquire(_) => 8,
-            _ => 9,
-        })
-    }
-}
-
-impl Error {
-    fn missing_queue() -> Self {
-        Self {
-            kind: ErrorKind::MissingQueue,
-        }
-    }
-
-    fn max_retries() -> Self {
-        Self {
-            kind: ErrorKind::MaxRetries,
-        }
-    }
-
-    fn failure(reason: u32) -> Self {
-        Self {
-            kind: ErrorKind::Failure(reason),
-        }
-    }
-}
-
 #[derive(Parser, Clone, Debug)]
 struct Options {
     #[clap(
@@ -178,7 +106,7 @@ struct Options {
         short,
         long = "start-port",
         help = "the first port to use",
-        default_value = "50000"
+        default_value_t = 50000
     )]
     start_port: u16,
 
@@ -186,7 +114,7 @@ struct Options {
         short,
         long = "end-port",
         help = "the last port to use",
-        default_value = "50100"
+        default_value_t = 50099
     )]
     end_port: u16,
 
@@ -194,7 +122,7 @@ struct Options {
         short,
         long = "threads",
         help = "how many threads to use",
-        default_value = "100"
+        default_value_t = 98
     )]
     threads: u16,
 
@@ -225,16 +153,29 @@ struct Options {
         short,
         long = "max",
         help = "the maximum number of concurrent transfers",
-        default_value = "100"
+        default_value_t = 100
     )]
     max: usize,
 
     #[clap(
         short,
         long = "verify",
-        help = "verify integrity of files using blake3"
+        help = "verify integrity of transfers using blake3"
     )]
     verify: bool,
+
+    #[clap(short, long = "overwrite", help = "overwrite existing files")]
+    overwrite: bool,
+
+    #[clap(
+        long = "control-crypto",
+        help = "encrypt the control stream",
+        default_value = "aes"
+    )]
+    control_crypto: Crypto,
+
+    #[clap(long = "stream-crypto", help = "encrypt the data stream")]
+    stream_crypto: Option<Crypto>,
 
     #[clap(help = "where to get the data from")]
     source: FileLocation,
@@ -247,14 +188,23 @@ impl Options {
     fn format_command(&self, sender: bool) -> String {
         let mode = if sender { "rr" } else { "rs" };
 
+        let stream_crypto = if let Some(ref crypto) = self.stream_crypto {
+            format!(" --stream-crypto {}", crypto)
+        } else {
+            String::new()
+        };
+
         format!(
-            "cccp --mode {} --start-port {} --end-port {} --threads {} --log-level {} --rate \"{}\" \"{}\" \"{}\"",
+            "cccp --mode {} -s {} -e {} -t {} -l {} -r \"{}\"{} --control-crypto {}{} \"{}\" \"{}\"",
             mode,
             self.start_port,
             self.end_port,
             self.threads,
             self.log_level,
             self.rate,
+            stream_crypto,
+            self.control_crypto,
+            if self.overwrite { " -o" } else { "" },
             self.source,
             self.destination
         )
@@ -284,6 +234,84 @@ impl FromStr for Mode {
             "remote-sender" => Self::Remote(true),
             _ => return Err(CustomParseErrors::UnknownMode),
         })
+    }
+}
+
+impl FromStr for Crypto {
+    type Err = CustomParseErrors;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let s = s.to_uppercase();
+        let count = s.matches(':').count();
+
+        if count == 0 {
+            let cipher = Cipher::from_str_name(&s).ok_or(CustomParseErrors::InvalidCipher)?;
+
+            let mut key = vec![0; cipher.key_length()];
+            OsRng.fill_bytes(&mut key);
+
+            let mut iv = vec![0; cipher.iv_length()];
+            OsRng.fill_bytes(&mut iv);
+
+            Ok(Self {
+                cipher: cipher as i32,
+                key,
+                iv,
+            })
+        } else if count == 1 {
+            let (cipher_str, key_str) = s.split_once(':').unwrap();
+
+            let cipher =
+                Cipher::from_str_name(cipher_str).ok_or(CustomParseErrors::InvalidCipher)?;
+            let key = hex::decode(key_str).map_err(|_| CustomParseErrors::InvalidKey)?;
+
+            let mut iv = vec![0; cipher.iv_length()];
+            OsRng.fill_bytes(&mut iv);
+
+            if key.len() == cipher.key_length() {
+                Ok(Self {
+                    cipher: cipher as i32,
+                    key,
+                    iv,
+                })
+            } else {
+                Err(CustomParseErrors::InvalidKey)
+            }
+        } else if count == 2 {
+            let (cipher_str, key_str, iv_str) = s.splitn(3, ':').collect_tuple().unwrap();
+
+            let cipher =
+                Cipher::from_str_name(cipher_str).ok_or(CustomParseErrors::InvalidCipher)?;
+            let key = hex::decode(key_str).map_err(|_| CustomParseErrors::InvalidKey)?;
+            let iv = hex::decode(iv_str).map_err(|_| CustomParseErrors::InvalidKey)?;
+
+            if key.len() == cipher.key_length() && iv.len() == cipher.iv_length() {
+                Ok(Self {
+                    cipher: cipher as i32,
+                    key,
+                    iv,
+                })
+            } else {
+                Err(CustomParseErrors::InvalidKey)
+            }
+        } else {
+            Err(CustomParseErrors::InvalidCipherFormat)
+        }
+    }
+}
+
+impl Display for Crypto {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let key = hex::encode(&self.key);
+        let iv = hex::encode(&self.iv);
+
+        write!(
+            f,
+            "{}:{}:{}",
+            Cipher::try_from(self.cipher).unwrap(),
+            key,
+            iv
+        )
     }
 }
 
@@ -361,11 +389,14 @@ impl FileLocation {
 }
 
 #[derive(Clone, Debug)]
-enum CustomParseErrors {
+pub enum CustomParseErrors {
     MalformedConnectionString(&'static str),
     UnknownMode,
     ParseError,
     IoError,
+    InvalidCipher,
+    InvalidCipherFormat,
+    InvalidKey,
 }
 
 impl Display for CustomParseErrors {
@@ -378,12 +409,15 @@ impl Display for CustomParseErrors {
                 Self::UnknownMode => "The mode can be either sender or receiver",
                 Self::ParseError => "Invalid file path",
                 Self::IoError => "An error occurred while getting the size of a file",
+                Self::InvalidCipher => "Invalid cipher",
+                Self::InvalidCipherFormat => "Invalid cipher format",
+                Self::InvalidKey => "Invalid key",
             }
         )
     }
 }
 
-impl error::Error for CustomParseErrors {}
+impl std::error::Error for CustomParseErrors {}
 
 impl From<io::Error> for CustomParseErrors {
     fn from(_: io::Error) -> Self {
@@ -683,15 +717,17 @@ async fn connect_stream(
 }
 
 /// write a `Message` to a writer
-async fn write_message<W: AsyncWrite + Unpin, M: Message>(
+async fn write_message<W: AsyncWrite + Unpin, M: Message, C: StreamCipherExt + ?Sized>(
     writer: &mut W,
     message: &M,
+    cipher: &mut Box<C>,
 ) -> Result<()> {
     let len = message.encoded_len();
     writer.write_u32(len as u32).await?;
 
     let mut buffer = Vec::with_capacity(len);
     message.encode(&mut buffer).unwrap();
+    cipher.apply_keystream(&mut buffer[..]);
 
     writer.write_all(&buffer).await?;
 
@@ -699,11 +735,19 @@ async fn write_message<W: AsyncWrite + Unpin, M: Message>(
 }
 
 /// read a `Message` from a reader
-async fn read_message<R: AsyncReadExt + Unpin, M: Message + Default>(reader: &mut R) -> Result<M> {
+async fn read_message<
+    R: AsyncReadExt + Unpin,
+    M: Message + Default,
+    C: StreamCipherExt + ?Sized,
+>(
+    reader: &mut R,
+    cipher: &mut Box<C>,
+) -> Result<M> {
     let len = reader.read_u32().await? as usize;
 
     let mut buffer = vec![0; len];
     reader.read_exact(&mut buffer).await?;
+    cipher.apply_keystream(&mut buffer[..]);
 
     let message = M::decode(&buffer[..])?;
 
@@ -728,4 +772,27 @@ async fn hash_file<P: AsRef<Path>>(path: P) -> io::Result<Hash> {
     }
 
     Ok(hasher.finalize())
+}
+
+fn make_cipher(crypto: &Crypto) -> Box<dyn StreamCipherExt> {
+    let key = GenericArray::from_slice(&crypto.key[..32]);
+
+    match crypto.cipher.try_into() {
+        Ok(Cipher::Aes) => {
+            let iv = GenericArray::from_slice(&crypto.key[..16]);
+
+            Box::new(Ctr128BE::<Aes256>::new(key, iv))
+        }
+        Ok(Cipher::Chacha8) => {
+            let iv = GenericArray::from_slice(&crypto.key[..12]);
+
+            Box::new(ChaCha8::new(key, iv))
+        }
+        Ok(Cipher::Chacha20) => {
+            let iv = GenericArray::from_slice(&crypto.key[..12]);
+
+            Box::new(ChaCha20::new(key, iv))
+        }
+        _ => unreachable!(),
+    }
 }
