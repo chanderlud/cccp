@@ -195,7 +195,7 @@ impl Options {
         };
 
         format!(
-            "cccp --mode {} -s {} -e {} -t {} -l {} -r \"{}\"{} --control-crypto {}{} \"{}\" \"{}\"",
+            "cccp --mode {} -s {} -e {} -t {} -l {} -r \"{}\"{} --control-crypto {}{}{} \"{}\" \"{}\"",
             mode,
             self.start_port,
             self.end_port,
@@ -205,6 +205,7 @@ impl Options {
             stream_crypto,
             self.control_crypto,
             if self.overwrite { " -o" } else { "" },
+            if self.verify { " -v" } else { "" },
             self.source,
             self.destination
         )
@@ -480,7 +481,7 @@ async fn main() -> Result<()> {
     let sender = options.source.is_local();
     let stats = TransferStats::default();
 
-    match options.mode {
+    let result = match options.mode {
         Mode::Local => {
             let command = options.format_command(sender);
 
@@ -586,9 +587,9 @@ async fn main() -> Result<()> {
             };
 
             select! {
-                _ = command_future => {},
-                _ = display_handle => {},
-                result = main_future => result?
+                _ = command_future => Ok(()),
+                _ = display_handle => Ok(()),
+                result = main_future => result
             }
         }
         Mode::Remote(sender) => {
@@ -603,15 +604,19 @@ async fn main() -> Result<()> {
             let remote_addr = remote_addr.ip();
 
             if sender {
-                sender::main(options, stats, rts_stream, str_stream, remote_addr).await?;
+                sender::main(options, stats, rts_stream, str_stream, remote_addr).await
             } else {
-                receiver::main(options, stats, rts_stream, str_stream, remote_addr).await?;
-            };
+                receiver::main(options, stats, rts_stream, str_stream, remote_addr).await
+            }
         }
+    };
+
+    if let Err(error) = &result {
+        error!("{:?}", error);
     }
 
     info!("exiting");
-    Ok(())
+    result
 }
 
 /// opens the sockets that will be used to send data
@@ -719,16 +724,15 @@ async fn write_message<W: AsyncWrite + Unpin, M: Message, C: StreamCipherExt + ?
     message: &M,
     cipher: &mut Box<C>,
 ) -> Result<()> {
-    let len = message.encoded_len();
-    writer.write_u32(len as u32).await?;
+    let len = message.encoded_len(); // get the length of the message
+    writer.write_u32(len as u32).await?; // write the length of the message
 
-    let mut buffer = Vec::with_capacity(len);
-    message.encode(&mut buffer).unwrap();
-    cipher.apply_keystream(&mut buffer[..]);
+    let mut buffer = Vec::with_capacity(len); // create a buffer to write the message into
+    message.encode(&mut buffer).unwrap(); // encode the message into the buffer (infallible)
+    cipher.apply_keystream(&mut buffer[..]); // encrypt the message
 
-    writer.write_all(&buffer).await?;
+    writer.write_all(&buffer).await?; // write the message to the writer
 
-    debug!("sent message: {:?}", message);
     Ok(())
 }
 
@@ -741,14 +745,13 @@ async fn read_message<
     reader: &mut R,
     cipher: &mut Box<C>,
 ) -> Result<M> {
-    let len = reader.read_u32().await? as usize;
+    let len = reader.read_u32().await? as usize; // read the length of the message
 
-    let mut buffer = vec![0; len];
-    reader.read_exact(&mut buffer).await?;
-    cipher.apply_keystream(&mut buffer[..]);
+    let mut buffer = vec![0; len]; // create a buffer to read the message into
+    reader.read_exact(&mut buffer).await?; // read the message into the buffer
+    cipher.apply_keystream(&mut buffer[..]); // decrypt the message
 
-    let message = M::decode(&buffer[..])?;
-    debug!("received message: {:?}", message);
+    let message = M::decode(&buffer[..])?; // decode the message
 
     Ok(message)
 }

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -7,6 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aes::cipher::crypto_common::rand_core::OsRng;
+use futures::stream::iter;
+use futures::{StreamExt, TryStreamExt};
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, error, info, warn};
 use rand::RngCore;
@@ -49,14 +52,18 @@ pub(crate) async fn main(
     let rts_cipher = make_cipher(&options.control_crypto);
 
     let mut manifest = build_manifest(
-        options.source.file_path.clone(),
+        &options.source.file_path,
         options.verify,
         &stats.total_data,
         &options.stream_crypto,
     )
     .await?;
 
-    debug!("sending manifest | files={} dirs={}", manifest.files.len(), manifest.directories.len());
+    debug!(
+        "sending manifest | files={} dirs={}",
+        manifest.files.len(),
+        manifest.directories.len()
+    );
     write_message(&mut str_stream, &manifest, &mut str_cipher).await?;
 
     let message: Message = read_message(&mut str_stream, &mut str_cipher).await?;
@@ -75,7 +82,7 @@ pub(crate) async fn main(
             error!("received failure message {}", failure.reason);
             return Err(Error::failure(failure.reason));
         }
-        _ => unreachable!(),
+        _ => unreachable!("received unexpected message: {:?}", message),
     }
 
     let sockets = socket_factory(
@@ -156,10 +163,10 @@ pub(crate) async fn main(
 
     // propagate the first error
     select! {
-        result = confirmation_handle => result?,
-        result = controller_handle => result?,
-        result = sender_future => result,
-        result = receiver_handle => result?,
+        result = confirmation_handle => { debug!("confirmation receiver exited: {:?}", result); result? },
+        result = controller_handle => { debug!("controller exited: {:?}", result); result? },
+        result = sender_future => { debug!("senders exited: {:?}", result); result },
+        result = receiver_handle => { debug!("message receiver exited: {:?}", result); result? },
     }
 }
 
@@ -198,7 +205,6 @@ async fn sender(
     }
 }
 
-// TODO there is something wrong with the controller, seems to be starting the same file multiple times or something
 #[allow(clippy::too_many_arguments)]
 async fn controller<C: StreamCipherExt + ?Sized>(
     mut control_stream: TcpStream,
@@ -247,39 +253,38 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                     debug!("received end message {} | active {}", end.id, active.len());
                 }
             }
-            Some(message::Message::Failure(failure)) => {
-                if failure.reason == 0 {
-                    if let Some(details) = active.get(&failure.id) {
-                        warn!(
-                            "transfer {} failed signature verification, retrying...",
-                            failure.id
-                        );
+            Some(message::Message::Failure(failure)) if failure.reason == 0 => {
+                if let Some(details) = active.get(&failure.id) {
+                    warn!(
+                        "transfer {} failed signature verification, retrying...",
+                        failure.id
+                    );
 
-                        confirmed_data.fetch_sub(details.size as usize, Relaxed);
+                    confirmed_data.fetch_sub(details.size as usize, Relaxed);
 
-                        start_file_transfer(
-                            &mut control_stream,
-                            failure.id,
-                            details,
-                            &base_path,
-                            &job_sender,
-                            &read,
-                            &confirmed_data,
-                            &mut cipher,
-                        )
-                        .await?;
-                    } else {
-                        warn!(
-                            "received failure message {} for unknown file {}",
-                            failure.reason, failure.id
-                        );
-                    }
+                    start_file_transfer(
+                        &mut control_stream,
+                        failure.id,
+                        details,
+                        &base_path,
+                        &job_sender,
+                        &read,
+                        &confirmed_data,
+                        &mut cipher,
+                    )
+                    .await?;
                 } else {
                     warn!(
-                        "received unknown failure message {} for {}",
+                        "received failure message {} for unknown file {}",
                         failure.reason, failure.id
                     );
                 }
+            }
+            Some(message::Message::Failure(failure)) => {
+                warn!(
+                    "received unknown failure message {} for file {}",
+                    failure.reason, failure.id
+                );
             }
             _ => unreachable!(), // only end and failure messages are sent to this receiver
         }
@@ -317,9 +322,15 @@ async fn start_file_transfer<C: StreamCipherExt + ?Sized>(
         let details = details.clone();
         let base_path = base_path.to_path_buf();
 
+        let path = if base_path.is_dir() {
+            base_path.join(&details.path)
+        } else {
+            base_path
+        };
+
         async move {
             let result = reader(
-                base_path.join(&details.path),
+                path,
                 job_sender,
                 read,
                 start_index.index,
@@ -479,7 +490,7 @@ async fn split_receiver<R: AsyncReadExt + Unpin, C: StreamCipherExt + ?Sized>(
 }
 
 async fn build_manifest(
-    source: PathBuf,
+    source: &PathBuf,
     verify: bool,
     total_data: &Arc<AtomicUsize>,
     crypto: &Option<Crypto>,
@@ -487,58 +498,58 @@ async fn build_manifest(
     // collect the files and directories to send
     let mut files = Vec::new();
     let mut dirs = Vec::new();
-    files_and_dirs(&source, &mut files, &mut dirs)?;
 
-    let mut file_map: HashMap<u32, FileDetail> = HashMap::with_capacity(files.len());
+    files_and_dirs(source, &mut files, &mut dirs)?;
+    let files_len = files.len();
+    debug!("found {} files & {} dirs", files_len, dirs.len());
 
-    // TODO add concurrency
-    for (index, mut file) in files.into_iter().enumerate() {
-        let size = tokio::fs::metadata(&file).await?.len();
-        total_data.fetch_add(size as usize, Relaxed);
+    let file_map: HashMap<u32, FileDetail> = iter(files.into_iter().enumerate())
+        .map(|(index, mut file)| async move {
+            let size = tokio::fs::metadata(&file).await?.len();
+            total_data.fetch_add(size as usize, Relaxed);
 
-        let signature = if verify {
-            let hash = hash_file(&file).await?;
-            Some(hash.as_bytes().to_vec())
-        } else {
-            None
-        };
+            let signature = if verify {
+                let hash = hash_file(&file).await?;
+                Some(hash.as_bytes().to_vec())
+            } else {
+                None
+            };
 
-        if file == source {
-            file = PathBuf::from(file.iter().last().unwrap())
-        } else {
-            file = file.strip_prefix(&source).unwrap().to_path_buf();
-        }
+            if &file == source {
+                file = PathBuf::from(file.iter().last().ok_or(Error::empty_path())?);
+            } else {
+                file = file.strip_prefix(source)?.to_path_buf();
+            }
 
-        // TODO windows only
-        let path = file.to_string_lossy().replace('\\', "/");
+            let mut crypto = crypto.clone();
 
-        let mut crypto = crypto.clone();
+            if let Some(ref mut crypto) = crypto {
+                OsRng.fill_bytes(&mut crypto.iv);
+            }
 
-        if let Some(ref mut crypto) = crypto {
-            OsRng.fill_bytes(&mut crypto.iv);
-        }
-
-        file_map.insert(
-            index as u32,
-            FileDetail {
-                path,
-                size,
-                signature,
-                crypto,
-            },
-        );
-    }
+            Ok::<(u32, FileDetail), Error>((
+                index as u32,
+                FileDetail {
+                    path: format_dir(file.to_string_lossy()),
+                    size,
+                    signature,
+                    crypto,
+                },
+            ))
+        })
+        .buffer_unordered(10)
+        .try_collect()
+        .await?;
 
     let directories = dirs
         .into_iter()
         .map(|dir| {
-            if let Ok(file_path) = dir.strip_prefix(&source) {
-                file_path.to_string_lossy().to_string()
+            if let Ok(file_path) = dir.strip_prefix(source) {
+                format_dir(file_path.to_string_lossy())
             } else {
-                dir.to_string_lossy().to_string()
+                format_dir(dir.to_string_lossy())
             }
         })
-        .map(|dir| dir.replace('\\', "/")) // TODO windows only
         .collect();
 
     let manifest = Manifest {
@@ -547,4 +558,16 @@ async fn build_manifest(
     };
 
     Ok(manifest)
+}
+
+#[cfg(windows)]
+#[inline(always)]
+fn format_dir(dir: Cow<'_, str>) -> String {
+    dir.replace('\\', "/") // replace the windows path separator with the unix one
+}
+
+#[cfg(not(windows))]
+#[inline(always)]
+fn format_dir(dir: Cow<'_, str>) -> String {
+    dir.to_string()
 }

@@ -1,13 +1,14 @@
-use futures::stream::iter;
 use std::collections::HashMap;
+use std::env::current_dir;
 use std::mem;
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::stream::iter;
 use futures::StreamExt;
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, error, info, warn};
@@ -51,7 +52,11 @@ pub(crate) async fn main(
 
     let manifest: Manifest = read_message(&mut str_stream, &mut str_cipher).await?;
     let is_dir = manifest.files.len() > 1; // if multiple files are being received, the destination should be a directory
-    debug!("received manifest | files={} dirs={}", manifest.files.len(), manifest.directories.len());
+    debug!(
+        "received manifest | files={} dirs={}",
+        manifest.files.len(),
+        manifest.directories.len()
+    );
 
     let completed = Arc::new(Mutex::new(Vec::new()));
 
@@ -112,9 +117,12 @@ pub(crate) async fn main(
         .await;
 
     let completed = completed.lock().await.clone();
-    debug!("processed files | files={} completed={}", files.len(), completed.len());
+    debug!(
+        "processed files | files={} completed={}",
+        files.len(),
+        completed.len()
+    );
 
-    debug!("trying to get free space...");
     let free_space = free_space(&options.destination.file_path)?;
     debug!("free space: {}", free_space);
 
@@ -198,9 +206,9 @@ pub(crate) async fn main(
     };
 
     select! {
-        result = confirmation_handle => result?,
-        result = controller_handle => result?,
-        result = receiver_future => result,
+        result = confirmation_handle => { debug!("confirmation sender exited: {:?}", result); result? },
+        result = controller_handle => { debug!("controller exited: {:?}", result); result? },
+        result = receiver_future => { debug!("receivers exited: {:?}", result); result },
     }
 }
 
@@ -284,16 +292,11 @@ async fn controller<C: StreamCipherExt + ?Sized>(
             Some(message::Message::Done(_)) => {
                 debug!("received done message");
                 message_sender.close();
-                break;
+                break Ok(());
             }
-            _ => {
-                error!("received {:?}", message);
-                break;
-            }
+            _ => unreachable!("controller received unexpected message: {:?}", message),
         }
     }
-
-    Ok(())
 }
 
 async fn send_confirmations(
@@ -345,7 +348,7 @@ async fn send_confirmations(
 
     // propagate errors from the sender thread while executing the future
     select! {
-        result = sender_handle => result?,
+        result = sender_handle => { debug!("confirmation sender exited: {:?}", result); result? },
         _ = future => Ok(())
     }
 }
@@ -363,25 +366,15 @@ async fn send_messages<W: AsyncWrite + Unpin, M: prost::Message, C: StreamCipher
     Ok(())
 }
 
-// TODO this is buggy af
 #[cfg(unix)]
 fn free_space(path: &Path) -> Result<u64> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
+    use nix::sys::statvfs::statvfs;
 
-    let dir = CString::new(path.as_os_str().as_bytes())?;
+    let path = format_path(path)?;
+    debug!("getting free space for {:?}", path);
+    let stat = statvfs(&path)?;
 
-    unsafe {
-        let mut buf: mem::MaybeUninit<libc::statvfs> = mem::MaybeUninit::uninit();
-        let result = libc::statvfs(dir.as_ptr(), buf.as_mut_ptr());
-
-        if result == 0 {
-            let stat = buf.assume_init();
-            Ok(stat.f_frsize as u64 * stat.f_bavail as u64)
-        } else {
-            Err(Error::status_error())
-        }
-    }
+    Ok(stat.blocks_available() as u64 * stat.fragment_size())
 }
 
 #[cfg(windows)]
@@ -389,6 +382,7 @@ fn free_space(path: &Path) -> Result<u64> {
     use widestring::U16CString;
     use windows_sys::Win32::Storage::FileSystem;
 
+    let path = format_path(path)?;
     let path = U16CString::from_os_str(path)?;
 
     let mut free_bytes = 0_u64;
@@ -408,4 +402,20 @@ fn free_space(path: &Path) -> Result<u64> {
     } else {
         Ok(free_bytes)
     }
+}
+
+/// returns the absolute path of the first existing parent directory
+fn format_path(path: &Path) -> Result<PathBuf> {
+    let mut path = path.to_path_buf();
+
+    if !path.is_absolute() {
+        let working_dir = current_dir()?;
+        path = working_dir.join(path);
+    }
+
+    while !path.exists() {
+        path = path.parent().ok_or(Error::empty_path())?.to_path_buf();
+    }
+
+    Ok(path)
 }

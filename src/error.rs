@@ -23,11 +23,14 @@ pub(crate) enum ErrorKind {
     #[cfg(windows)]
     ContainsNull(widestring::error::ContainsNul<u16>),
     #[cfg(unix)]
-    Nul(std::ffi::NulError),
+    Nix(nix::Error),
+    StripPrefix(std::path::StripPrefixError),
     MissingQueue,
     MaxRetries,
+    #[cfg(windows)]
     StatusError,
     Failure(u32),
+    EmptyPath,
 }
 
 impl From<io::Error> for Error {
@@ -104,10 +107,18 @@ impl From<widestring::error::ContainsNul<u16>> for Error {
 }
 
 #[cfg(unix)]
-impl From<std::ffi::NulError> for Error {
-    fn from(error: std::ffi::NulError) -> Self {
+impl From<nix::Error> for Error {
+    fn from(error: nix::Error) -> Self {
         Self {
-            kind: ErrorKind::Nul(error),
+            kind: ErrorKind::Nix(error),
+        }
+    }
+}
+
+impl From<std::path::StripPrefixError> for Error {
+    fn from(error: std::path::StripPrefixError) -> Self {
+        Self {
+            kind: ErrorKind::StripPrefix(error),
         }
     }
 }
@@ -149,6 +160,13 @@ impl Error {
         }
     }
 
+    pub(crate) fn empty_path() -> Self {
+        Self {
+            kind: ErrorKind::EmptyPath,
+        }
+    }
+
+    #[cfg(windows)]
     pub(crate) fn status_error() -> Self {
         Self {
             kind: ErrorKind::StatusError,

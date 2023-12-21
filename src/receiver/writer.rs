@@ -167,6 +167,7 @@ pub(crate) async fn writer(
     }
 
     details.rename().await?; // rename the file
+    debug!("sending end message for {}", details.id);
     message_sender.send(Message::end(details.id)).await?; // send the end message
 
     Ok(())
