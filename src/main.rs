@@ -1,9 +1,7 @@
 #![feature(int_roundings)]
 
-use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -12,20 +10,16 @@ use std::time::Duration;
 use aes::Aes256;
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
 use blake3::{Hash, Hasher};
-use bytesize::ByteSize;
 use chacha20::cipher::generic_array::GenericArray;
 use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use chacha20::{ChaCha20, ChaCha8};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use ctr::Ctr128BE;
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
-use itertools::Itertools;
-use log::{debug, error, info, warn, LevelFilter};
+use log::{debug, error, info, warn};
 use prost::Message;
-use rand::{rngs::OsRng, RngCore};
-use regex::Regex;
 use rpassword::prompt_password;
 use simple_logging::{log_to_file, log_to_stderr};
 use tokio::fs::File;
@@ -35,19 +29,35 @@ use tokio::time::{interval, sleep};
 use tokio::{io, select};
 
 use crate::items::{Cipher, Crypto};
+use crate::options::{Mode, Options};
 
 mod error;
 mod items;
+mod options;
 mod receiver;
 mod sender;
 
 // result alias used throughout
 type Result<T> = std::result::Result<T, error::Error>;
 
-pub(crate) trait StreamCipherExt: Send + Sync {
+trait StreamCipherExt: Send + Sync {
     fn seek(&mut self, index: u64);
     fn apply_keystream(&mut self, data: &mut [u8]);
 }
+
+// read buffer must be a multiple of the transfer buffer to prevent a nasty little bug
+const READ_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
+const WRITE_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
+const TRANSFER_BUFFER_SIZE: usize = 1024;
+const INDEX_SIZE: usize = std::mem::size_of::<u64>();
+const ID_SIZE: usize = std::mem::size_of::<u32>();
+const MAX_RETRIES: usize = 10;
+const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
+// UDP header + ID + INDEX + DATA
+const PACKET_SIZE: usize = 8 + ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE;
+
+// how long to wait for a job to be confirmed before requeuing it
+const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
 
 impl StreamCipherExt for ChaCha20 {
     fn seek(&mut self, index: u64) {
@@ -79,353 +89,6 @@ impl StreamCipherExt for Ctr128BE<Aes256> {
     }
 }
 
-// read buffer must be a multiple of the transfer buffer to prevent a nasty little bug
-const READ_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
-const WRITE_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
-const TRANSFER_BUFFER_SIZE: usize = 1024;
-const INDEX_SIZE: usize = std::mem::size_of::<u64>();
-const ID_SIZE: usize = std::mem::size_of::<u32>();
-const MAX_RETRIES: usize = 10;
-const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
-// UDP header + ID + INDEX + DATA
-const PACKET_SIZE: usize = 8 + ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE;
-
-// how long to wait for a job to be confirmed before requeuing it
-const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
-
-#[derive(Parser, Clone, Debug)]
-struct Options {
-    #[clap(
-        long = "mode",
-        hide = true, // the user does not need to set this
-        default_value = "local"
-    )]
-    mode: Mode,
-
-    #[clap(
-        short,
-        long = "start-port",
-        help = "the first port to use",
-        default_value_t = 50000
-    )]
-    start_port: u16,
-
-    #[clap(
-        short,
-        long = "end-port",
-        help = "the last port to use",
-        default_value_t = 50099
-    )]
-    end_port: u16,
-
-    #[clap(
-        short,
-        long = "threads",
-        help = "how many threads to use",
-        default_value_t = 98
-    )]
-    threads: u16,
-
-    #[clap(
-        short,
-        long = "log-level",
-        help = "log level [debug, info, warn, error]",
-        default_value = "warn"
-    )]
-    log_level: LevelFilter,
-
-    #[clap(
-        short,
-        long = "bind-address",
-        help = "manually specify the bind address"
-    )]
-    bind_address: Option<IpAddr>,
-
-    #[clap(
-        short,
-        long = "rate",
-        help = "the rate to send data at [b, kb, mb, gb, tb]",
-        default_value = "1mb"
-    )]
-    rate: ByteSize,
-
-    #[clap(
-        short,
-        long = "max",
-        help = "the maximum number of concurrent transfers",
-        default_value_t = 100
-    )]
-    max: usize,
-
-    #[clap(
-        short,
-        long = "verify",
-        help = "verify integrity of transfers using blake3"
-    )]
-    verify: bool,
-
-    #[clap(short, long = "overwrite", help = "overwrite existing files")]
-    overwrite: bool,
-
-    #[clap(
-        long = "control-crypto",
-        help = "encrypt the control stream",
-        default_value = "aes"
-    )]
-    control_crypto: Crypto,
-
-    #[clap(long = "stream-crypto", help = "encrypt the data stream")]
-    stream_crypto: Option<Crypto>,
-
-    #[clap(help = "where to get the data from")]
-    source: FileLocation,
-
-    #[clap(help = "where to send the data")]
-    destination: FileLocation,
-}
-
-impl Options {
-    fn format_command(&self, sender: bool) -> String {
-        let mode = if sender { "rr" } else { "rs" };
-
-        let stream_crypto = if let Some(ref crypto) = self.stream_crypto {
-            format!(" --stream-crypto {}", crypto)
-        } else {
-            String::new()
-        };
-
-        format!(
-            "cccp --mode {} -s {} -e {} -t {} -l {} -r \"{}\"{} --control-crypto {}{}{} \"{}\" \"{}\"",
-            mode,
-            self.start_port,
-            self.end_port,
-            self.threads,
-            self.log_level,
-            self.rate,
-            stream_crypto,
-            self.control_crypto,
-            if self.overwrite { " -o" } else { "" },
-            if self.verify { " -v" } else { "" },
-            self.source,
-            self.destination
-        )
-    }
-
-    fn pps(&self) -> u64 {
-        self.rate.0 / PACKET_SIZE as u64
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum Mode {
-    Local,
-    Remote(bool), // Remote(sender)
-}
-
-impl FromStr for Mode {
-    type Err = CustomParseErrors;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(match s {
-            "l" => Self::Local,
-            "rr" => Self::Remote(false),
-            "rs" => Self::Remote(true),
-            "local" => Self::Local,
-            "remote-receiver" => Self::Remote(false),
-            "remote-sender" => Self::Remote(true),
-            _ => return Err(CustomParseErrors::UnknownMode),
-        })
-    }
-}
-
-impl FromStr for Crypto {
-    type Err = CustomParseErrors;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let s = s.to_uppercase();
-        let count = s.matches(':').count();
-
-        if count == 0 {
-            let cipher = Cipher::from_str_name(&s).ok_or(CustomParseErrors::InvalidCipher)?;
-
-            let mut key = vec![0; cipher.key_length()];
-            OsRng.fill_bytes(&mut key);
-
-            let mut iv = vec![0; cipher.iv_length()];
-            OsRng.fill_bytes(&mut iv);
-
-            Ok(Self {
-                cipher: cipher as i32,
-                key,
-                iv,
-            })
-        } else if count == 1 {
-            let (cipher_str, key_str) = s.split_once(':').unwrap();
-
-            let cipher =
-                Cipher::from_str_name(cipher_str).ok_or(CustomParseErrors::InvalidCipher)?;
-            let key = hex::decode(key_str).map_err(|_| CustomParseErrors::InvalidKey)?;
-
-            let mut iv = vec![0; cipher.iv_length()];
-            OsRng.fill_bytes(&mut iv);
-
-            if key.len() == cipher.key_length() {
-                Ok(Self {
-                    cipher: cipher as i32,
-                    key,
-                    iv,
-                })
-            } else {
-                Err(CustomParseErrors::InvalidKey)
-            }
-        } else if count == 2 {
-            let (cipher_str, key_str, iv_str) = s.splitn(3, ':').collect_tuple().unwrap();
-
-            let cipher =
-                Cipher::from_str_name(cipher_str).ok_or(CustomParseErrors::InvalidCipher)?;
-            let key = hex::decode(key_str).map_err(|_| CustomParseErrors::InvalidKey)?;
-            let iv = hex::decode(iv_str).map_err(|_| CustomParseErrors::InvalidKey)?;
-
-            if key.len() == cipher.key_length() && iv.len() == cipher.iv_length() {
-                Ok(Self {
-                    cipher: cipher as i32,
-                    key,
-                    iv,
-                })
-            } else {
-                Err(CustomParseErrors::InvalidKey)
-            }
-        } else {
-            Err(CustomParseErrors::InvalidCipherFormat)
-        }
-    }
-}
-
-impl Display for Crypto {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let key = hex::encode(&self.key);
-        let iv = hex::encode(&self.iv);
-
-        write!(
-            f,
-            "{}:{}:{}",
-            Cipher::try_from(self.cipher).unwrap(),
-            key,
-            iv
-        )
-    }
-}
-
-// a file located anywhere
-#[derive(Clone, Debug)]
-struct FileLocation {
-    file_path: PathBuf,
-    host: Option<String>,
-    username: Option<String>,
-}
-
-impl FromStr for FileLocation {
-    type Err = CustomParseErrors;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let (username, host, file_path_str) = if s.contains('@') {
-            let captures = Regex::new("([^:]+)@([^:]+):(.+)")
-                .unwrap()
-                .captures(s)
-                .ok_or(CustomParseErrors::MalformedConnectionString(
-                    "input does not match format",
-                ))?;
-            (
-                captures.get(1).map(|m| m.as_str().to_string()),
-                captures.get(2).map(|m| m.as_str().to_string()),
-                captures.get(3).map(|m| m.as_str().to_string()),
-            )
-        } else if s.contains(':') {
-            let (host, file_path_str) =
-                s.split_once(':')
-                    .ok_or(CustomParseErrors::MalformedConnectionString(
-                        "input does not match known format",
-                    ))?;
-            (
-                None,
-                Some(host.to_string()),
-                Some(file_path_str.to_string()),
-            )
-        } else {
-            (None, None, Some(s.to_string()))
-        };
-
-        let file_path = file_path_str
-            .ok_or(CustomParseErrors::MalformedConnectionString(
-                "missing file path",
-            ))?
-            .parse()
-            .map_err(|_| CustomParseErrors::ParseError)?;
-
-        Ok(Self {
-            file_path,
-            host,
-            username,
-        })
-    }
-}
-
-impl Display for FileLocation {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let file_path = self.file_path.display();
-
-        match (&self.username, &self.host) {
-            (None, None) => write!(f, "{}", file_path),
-            (None, Some(host)) => write!(f, "{}:{}", host, file_path),
-            (Some(username), Some(host)) => write!(f, "{}@{}:{}", username, host, file_path),
-            _ => Err(std::fmt::Error),
-        }
-    }
-}
-
-impl FileLocation {
-    fn is_local(&self) -> bool {
-        self.host.is_none() || (self.host.is_some() && self.file_path.exists())
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum CustomParseErrors {
-    MalformedConnectionString(&'static str),
-    UnknownMode,
-    ParseError,
-    IoError,
-    InvalidCipher,
-    InvalidCipherFormat,
-    InvalidKey,
-}
-
-impl Display for CustomParseErrors {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::MalformedConnectionString(message) => message,
-                Self::UnknownMode => "The mode can be either sender or receiver",
-                Self::ParseError => "Invalid file path",
-                Self::IoError => "An error occurred while getting the size of a file",
-                Self::InvalidCipher => "Invalid cipher",
-                Self::InvalidCipherFormat => "Invalid cipher format",
-                Self::InvalidKey => "Invalid key",
-            }
-        )
-    }
-}
-
-impl std::error::Error for CustomParseErrors {}
-
-impl From<io::Error> for CustomParseErrors {
-    fn from(_: io::Error) -> Self {
-        Self::IoError
-    }
-}
-
 #[derive(Clone, Default)]
 struct TransferStats {
     confirmed_data: Arc<AtomicUsize>,
@@ -435,6 +98,7 @@ struct TransferStats {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut options = Options::parse();
+    let mut command = Options::command();
 
     match options.mode {
         Mode::Local => log_to_stderr(options.log_level),
@@ -444,13 +108,23 @@ async fn main() -> Result<()> {
     // only the local client needs to handle input validation
     if options.mode == Mode::Local {
         if options.start_port > options.end_port {
-            panic!("end port must be greater than start port")
+            command
+                .error(
+                    clap::error::ErrorKind::ValueValidation,
+                    "end port must be greater than start port",
+                )
+                .exit();
         }
 
         let port_count = options.end_port - options.start_port + 1;
 
         if port_count < 3 {
-            panic!("a minimum of three ports are required")
+            command
+                .error(
+                    clap::error::ErrorKind::ValueValidation,
+                    "a minimum of three ports are required",
+                )
+                .exit();
         } else if port_count - 2 < options.threads {
             warn!(
                 "{} ports < {} threads. decreasing threads to {}",
@@ -474,7 +148,19 @@ async fn main() -> Result<()> {
         }
 
         if options.destination.host.is_none() && options.source.host.is_none() {
-            panic!("either the source or destination must be remote");
+            command
+                .error(
+                    clap::error::ErrorKind::ValueValidation,
+                    "either the source or destination must be remote",
+                )
+                .exit();
+        } else if options.destination.is_local() && options.source.is_local() {
+            command
+                .error(
+                    clap::error::ErrorKind::ValueValidation,
+                    "both the source and destination cannot be local",
+                )
+                .exit();
         }
     }
 
@@ -483,18 +169,27 @@ async fn main() -> Result<()> {
 
     let result = match options.mode {
         Mode::Local => {
-            let command = options.format_command(sender);
+            let command_str = options.format_command(sender);
 
             let (local, remote) = if sender {
-                (&options.source, &options.destination)
+                (&options.source, &mut options.destination)
             } else {
-                (&options.destination, &options.source)
+                (&options.destination, &mut options.source)
             };
 
             if remote.username.is_none() {
-                panic!("username must be specified for remote host: {}", remote);
+                warn!(
+                    "username not specified for remote host (trying \"\"): {}",
+                    remote
+                );
+                remote.username = Some(String::new());
             } else if remote.host.is_none() {
-                panic!("host must be specified for remote host: {}", remote);
+                command
+                    .error(
+                        clap::error::ErrorKind::ValueValidation,
+                        format!("host must be specified for remote host: {}", remote),
+                    )
+                    .exit();
             }
 
             debug!("local {}", local);
@@ -505,12 +200,13 @@ async fn main() -> Result<()> {
                 password_auth().unwrap()
             });
 
-            let remote_addr: IpAddr = remote.host.as_ref().unwrap().parse().unwrap();
+            // unwrap is safe because we check for a host above
+            let remote_addr = remote.host.unwrap();
 
             let client = loop {
                 match Client::connect(
-                    (remote_addr, 22),
-                    remote.username.as_ref().unwrap().as_str(),
+                    remote_addr,
+                    remote.username.as_ref().unwrap().as_str(), // unwrap is safe because we check for a username above
                     auth_method.clone(),
                     ServerCheckMethod::NoCheck,
                 )
@@ -525,7 +221,7 @@ async fn main() -> Result<()> {
                                 info!("trying password auth");
                                 auth_method = password_auth().unwrap();
                             }
-                            _ => panic!("failed to connect to remote host: {}", error),
+                            _ => return Err(error.into()),
                         }
                     }
                 }
@@ -535,17 +231,21 @@ async fn main() -> Result<()> {
 
             let command_handle = tokio::spawn(async move {
                 info!("executing command on remote host");
-                debug!("command: {}", command);
+                debug!("command: {}", command_str);
 
-                client.execute(&command).await
+                client.execute(&command_str).await
             });
 
             // receiver -> sender stream
             let rts_stream =
-                connect_stream(remote_addr, options.start_port, options.bind_address).await?;
+                connect_stream(remote_addr.ip(), options.start_port, options.bind_address).await?;
             // sender -> receiver stream
-            let str_stream =
-                connect_stream(remote_addr, options.start_port + 1, options.bind_address).await?;
+            let str_stream = connect_stream(
+                remote_addr.ip(),
+                options.start_port + 1,
+                options.bind_address,
+            )
+            .await?;
 
             let display_handle = tokio::spawn({
                 let stats = stats.clone();
@@ -555,10 +255,23 @@ async fn main() -> Result<()> {
 
             let main_future = async {
                 if sender {
-                    sender::main(options, stats.clone(), rts_stream, str_stream, remote_addr).await
+                    sender::main(
+                        options,
+                        stats.clone(),
+                        rts_stream,
+                        str_stream,
+                        remote_addr.ip(),
+                    )
+                    .await
                 } else {
-                    receiver::main(options, stats.clone(), rts_stream, str_stream, remote_addr)
-                        .await
+                    receiver::main(
+                        options,
+                        stats.clone(),
+                        rts_stream,
+                        str_stream,
+                        remote_addr.ip(),
+                    )
+                    .await
                 }
             };
 
