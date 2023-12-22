@@ -24,11 +24,9 @@ bytesize = "1.3"
 kanal = "0.1.0-pre8"
 blake3 = "1.5"
 chacha20 = "0.9"
-rand = "0.8"
-hex = "0.4"
+base64 = "0.21"
 ctr = "0.9"
 aes = "0.8"
-itertools = "0.12"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["fs"] }
