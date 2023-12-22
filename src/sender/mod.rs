@@ -511,7 +511,7 @@ async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Res
                 },
             ))
         })
-        .buffer_unordered(10)
+        .buffer_unordered(options.threads)
         .try_collect()
         .await?;
 

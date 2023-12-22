@@ -38,7 +38,7 @@ pub(crate) struct Options {
 
     /// The number of threads to use
     #[clap(short, long, default_value_t = 98)]
-    pub(crate) threads: u16,
+    pub(crate) threads: usize,
 
     /// The log level [debug, info, warn, error]
     #[clap(short, long, default_value = "warn")]

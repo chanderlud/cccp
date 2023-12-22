@@ -125,16 +125,16 @@ async fn main() -> Result<()> {
                     "a minimum of three ports are required",
                 )
                 .exit();
-        } else if port_count - 2 < options.threads {
+        } else if port_count - 2 < options.threads as u16 {
             warn!(
                 "{} ports < {} threads. decreasing threads to {}",
                 port_count - 2,
                 options.threads,
                 port_count - 2
             );
-            options.threads = port_count - 2;
-        } else if port_count - 2 > options.threads {
-            let new_end = options.start_port + options.threads + 1;
+            options.threads = (port_count - 2) as usize;
+        } else if port_count - 2 > options.threads as u16 {
+            let new_end = options.start_port + options.threads as u16 + 1;
 
             warn!(
                 "{} ports > {} threads. changing to {}-{}",
@@ -337,7 +337,7 @@ async fn socket_factory(
     start: u16,
     end: u16,
     remote_addr: IpAddr,
-    threads: u16,
+    threads: usize,
 ) -> io::Result<Vec<UdpSocket>> {
     let bind_addr: IpAddr = "0.0.0.0".parse().unwrap();
 
@@ -352,7 +352,7 @@ async fn socket_factory(
                 Ok::<UdpSocket, io::Error>(socket)
             }
         })
-        .buffer_unordered(threads as usize)
+        .buffer_unordered(threads)
         .try_collect()
         .await
 }
