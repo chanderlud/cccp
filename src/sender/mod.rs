@@ -7,12 +7,11 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aes::cipher::crypto_common::rand_core::OsRng;
+use aes::cipher::crypto_common::rand_core::{OsRng, RngCore};
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, error, info, warn};
-use rand::RngCore;
 use tokio::io::{self, AsyncReadExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::select;
@@ -20,7 +19,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{interval, Instant};
 
 use crate::error::Error;
-use crate::items::{message, Confirmations, Crypto, FileDetail, Manifest, Message, StartIndex};
+use crate::items::{message, Confirmations, FileDetail, Manifest, Message, StartIndex};
 use crate::sender::reader::reader;
 use crate::{
     hash_file, make_cipher, read_message, socket_factory, write_message, Options, Result,
@@ -51,13 +50,7 @@ pub(crate) async fn main(
     let mut str_cipher = make_cipher(&options.control_crypto);
     let rts_cipher = make_cipher(&options.control_crypto);
 
-    let mut manifest = build_manifest(
-        &options.source.file_path,
-        options.verify,
-        &stats.total_data,
-        &options.stream_crypto,
-    )
-    .await?;
+    let mut manifest = build_manifest(&options, &stats.total_data).await?;
 
     debug!(
         "sending manifest | files={} dirs={}",
@@ -359,7 +352,7 @@ async fn receive_confirmations(
     let lost_confirmations: Arc<Mutex<HashSet<(u32, u64)>>> = Default::default();
 
     // this thread checks the cache for unconfirmed jobs that have been there for too long and requeues them
-    tokio::spawn({
+    let requeue_handle = tokio::spawn({
         let cache = cache.clone();
         let lost_confirmations = lost_confirmations.clone();
         let confirmed_data = confirmed_data.clone();
@@ -396,7 +389,7 @@ async fn receive_confirmations(
                             confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed);
                         } else {
                             unconfirmed.cached_at = None;
-                            job_sender.send(unconfirmed).await.unwrap();
+                            job_sender.send(unconfirmed).await?;
                         }
                     }
                 }
@@ -404,25 +397,30 @@ async fn receive_confirmations(
         }
     });
 
-    while let Ok(confirmations) = confirmation_receiver.recv().await {
-        let mut lost_confirmations = lost_confirmations.lock().await;
-        let mut cache = cache.write().await;
+    let future = async {
+        while let Ok(confirmations) = confirmation_receiver.recv().await {
+            let mut lost_confirmations = lost_confirmations.lock().await;
+            let mut cache = cache.write().await;
 
-        for (id, indexes) in confirmations.indexes {
-            // process the array of indexes
-            for index in indexes.inner {
-                if cache.remove(&(id, index)).is_none() {
-                    // if the index is not in the cache, it was already requeued
-                    lost_confirmations.insert((id, index));
-                } else {
-                    read.add_permits(1); // add a permit to the reader
-                    confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed);
+            for (id, indexes) in confirmations.indexes {
+                // process the array of indexes
+                for index in indexes.inner {
+                    if cache.remove(&(id, index)).is_none() {
+                        // if the index is not in the cache, it was already requeued
+                        lost_confirmations.insert((id, index));
+                    } else {
+                        read.add_permits(1); // add a permit to the reader
+                        confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed);
+                    }
                 }
             }
         }
-    }
+    };
 
-    Ok(())
+    select! {
+        result = requeue_handle => { debug!("requeue thread exited: {:?}", result); result? },
+        _ = future => { debug!("confirmation receiver exited"); Ok(()) },
+    }
 }
 
 /// adds leases to the semaphore at a given rate
@@ -440,30 +438,6 @@ async fn add_permits_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
             semaphore.add_permits(1);
         }
     }
-}
-
-/// recursively collect all files and directories in a directory
-fn files_and_dirs(
-    source: &Path,
-    files: &mut Vec<PathBuf>,
-    dirs: &mut Vec<PathBuf>,
-) -> io::Result<()> {
-    if source.is_dir() {
-        for entry in source.read_dir()?.filter_map(std::result::Result::ok) {
-            let path = entry.path();
-
-            if path.is_dir() {
-                dirs.push(path.clone());
-                files_and_dirs(&path, files, dirs)?;
-            } else {
-                files.push(path);
-            }
-        }
-    } else {
-        files.push(source.to_path_buf());
-    }
-
-    Ok(())
 }
 
 /// split the message stream into `Confirmation` and `End + Failure` messages
@@ -489,17 +463,17 @@ async fn split_receiver<R: AsyncReadExt + Unpin, C: StreamCipherExt + ?Sized>(
     }
 }
 
-async fn build_manifest(
-    source: &PathBuf,
-    verify: bool,
-    total_data: &Arc<AtomicUsize>,
-    crypto: &Option<Crypto>,
-) -> Result<Manifest> {
+async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Result<Manifest> {
     // collect the files and directories to send
     let mut files = Vec::new();
     let mut dirs = Vec::new();
 
-    files_and_dirs(source, &mut files, &mut dirs)?;
+    files_and_dirs(
+        &options.source.file_path,
+        &mut files,
+        &mut dirs,
+        options.recursive,
+    )?;
     let files_len = files.len();
     debug!("found {} files & {} dirs", files_len, dirs.len());
 
@@ -508,20 +482,20 @@ async fn build_manifest(
             let size = tokio::fs::metadata(&file).await?.len();
             total_data.fetch_add(size as usize, Relaxed);
 
-            let signature = if verify {
+            let signature = if options.verify {
                 let hash = hash_file(&file).await?;
                 Some(hash.as_bytes().to_vec())
             } else {
                 None
             };
 
-            if &file == source {
+            if file == options.source.file_path {
                 file = PathBuf::from(file.iter().last().ok_or(Error::empty_path())?);
             } else {
-                file = file.strip_prefix(source)?.to_path_buf();
+                file = file.strip_prefix(&options.source.file_path)?.to_path_buf();
             }
 
-            let mut crypto = crypto.clone();
+            let mut crypto = options.stream_crypto.clone();
 
             if let Some(ref mut crypto) = crypto {
                 OsRng.fill_bytes(&mut crypto.iv);
@@ -544,7 +518,7 @@ async fn build_manifest(
     let directories = dirs
         .into_iter()
         .map(|dir| {
-            if let Ok(file_path) = dir.strip_prefix(source) {
+            if let Ok(file_path) = dir.strip_prefix(&options.source.file_path) {
                 format_dir(file_path.to_string_lossy())
             } else {
                 format_dir(dir.to_string_lossy())
@@ -558,6 +532,36 @@ async fn build_manifest(
     };
 
     Ok(manifest)
+}
+
+/// recursively collect all files and directories in a directory
+fn files_and_dirs(
+    source: &Path,
+    files: &mut Vec<PathBuf>,
+    dirs: &mut Vec<PathBuf>,
+    recursive: bool,
+) -> io::Result<()> {
+    if source.is_dir() {
+        for entry in source.read_dir()?.filter_map(std::result::Result::ok) {
+            let path = entry.path();
+
+            if path.is_dir() {
+                dirs.push(path.clone());
+
+                if dirs.len() > 1 && !recursive {
+                    continue;
+                }
+
+                files_and_dirs(&path, files, dirs, recursive)?;
+            } else {
+                files.push(path);
+            }
+        }
+    } else {
+        files.push(source.to_path_buf());
+    }
+
+    Ok(())
 }
 
 #[cfg(windows)]
