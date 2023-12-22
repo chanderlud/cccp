@@ -13,7 +13,7 @@ pub(crate) struct Error {
 #[derive(Debug)]
 pub(crate) enum ErrorKind {
     Io(io::Error),
-    Parse(std::net::AddrParseError),
+    AddrParse(std::net::AddrParseError),
     Decode(prost::DecodeError),
     Join(tokio::task::JoinError),
     Send(SendError),
@@ -25,12 +25,14 @@ pub(crate) enum ErrorKind {
     #[cfg(unix)]
     Nix(nix::Error),
     StripPrefix(std::path::StripPrefixError),
+    Ssh(async_ssh2_tokio::Error),
     MissingQueue,
     MaxRetries,
     #[cfg(windows)]
     StatusError,
     Failure(u32),
     EmptyPath,
+    InvalidExtension,
 }
 
 impl From<io::Error> for Error {
@@ -44,7 +46,7 @@ impl From<io::Error> for Error {
 impl From<std::net::AddrParseError> for Error {
     fn from(error: std::net::AddrParseError) -> Self {
         Self {
-            kind: ErrorKind::Parse(error),
+            kind: ErrorKind::AddrParse(error),
         }
     }
 }
@@ -123,6 +125,14 @@ impl From<std::path::StripPrefixError> for Error {
     }
 }
 
+impl From<async_ssh2_tokio::Error> for Error {
+    fn from(error: async_ssh2_tokio::Error) -> Self {
+        Self {
+            kind: ErrorKind::Ssh(error),
+        }
+    }
+}
+
 impl Termination for Error {
     fn report(self) -> ExitCode {
         ExitCode::from(match self.kind {
@@ -130,7 +140,7 @@ impl Termination for Error {
                 io::ErrorKind::NotFound => 1,
                 _ => 2,
             },
-            ErrorKind::Parse(_) => 3,
+            ErrorKind::AddrParse(_) => 3,
             ErrorKind::Decode(_) => 4,
             ErrorKind::Join(_) => 5,
             ErrorKind::Send(_) => 6,
@@ -163,6 +173,12 @@ impl Error {
     pub(crate) fn empty_path() -> Self {
         Self {
             kind: ErrorKind::EmptyPath,
+        }
+    }
+
+    pub(crate) fn invalid_extension() -> Self {
+        Self {
+            kind: ErrorKind::InvalidExtension,
         }
     }
 
