@@ -33,11 +33,11 @@ pub(crate) struct Options {
     pub(crate) start_port: u16,
 
     /// The last port to use
-    #[clap(short, long, default_value_t = 50099)]
+    #[clap(short, long, default_value_t = 50009)]
     pub(crate) end_port: u16,
 
     /// The number of threads to use
-    #[clap(short, long, default_value_t = 98)]
+    #[clap(short, long, default_value_t = 8)]
     pub(crate) threads: usize,
 
     /// The log level [debug, info, warn, error]
@@ -87,29 +87,37 @@ pub(crate) struct Options {
 
 impl Options {
     pub(crate) fn format_command(&self, sender: bool) -> String {
-        let mode = if sender { "rr" } else { "rs" };
+        let mut arguments = vec![
+            String::from("cccp"),
+            format!("--mode {}", if sender { "rr" } else { "rs" }),
+            format!("-s {}", self.start_port),
+            format!("-e {}", self.end_port),
+            format!("-t {}", self.threads),
+            format!("-l {}", self.log_level),
+            format!("-r \"{}\"", self.rate),
+            format!("--control-crypto {}", self.control_crypto),
+        ];
 
-        let stream_crypto = if let Some(ref crypto) = self.stream_crypto {
-            format!(" --stream-crypto {}", crypto)
-        } else {
-            String::new()
-        };
+        if let Some(ref crypto) = self.stream_crypto {
+            arguments.push(format!(" --stream-crypto {}", crypto))
+        }
 
-        format!(
-            "cccp --mode {} -s {} -e {} -t {} -l {} -r \"{}\"{} --control-crypto {}{}{} \"{}\" \"{}\"",
-            mode,
-            self.start_port,
-            self.end_port,
-            self.threads,
-            self.log_level,
-            self.rate,
-            stream_crypto,
-            self.control_crypto,
-            if self.overwrite { " -o" } else { "" },
-            if self.verify { " -v" } else { "" },
-            self.source,
-            self.destination
-        )
+        if self.overwrite {
+            arguments.push(String::from("-o"))
+        }
+
+        if self.verify {
+            arguments.push(String::from("-v"))
+        }
+
+        if self.recursive {
+            arguments.push(String::from("-R"))
+        }
+
+        arguments.push(format!("\"{}\"", self.source));
+        arguments.push(format!("\"{}\"", self.destination));
+
+        arguments.join(" ")
     }
 
     pub(crate) fn pps(&self) -> u64 {

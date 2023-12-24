@@ -1,4 +1,5 @@
 use std::array::TryFromSliceError;
+use std::fmt::Formatter;
 use std::process::{ExitCode, Termination};
 
 use kanal::{ReceiveError, SendError};
@@ -148,6 +149,34 @@ impl Termination for Error {
             ErrorKind::Acquire(_) => 8,
             _ => 9,
         })
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            ErrorKind::Io(ref error) => write!(f, "IO error: {}", error),
+            ErrorKind::AddrParse(ref error) => write!(f, "Address parse error: {}", error),
+            ErrorKind::Decode(ref error) => write!(f, "Decode error: {}", error),
+            ErrorKind::Join(ref error) => write!(f, "Join error: {}", error),
+            ErrorKind::Send(ref error) => write!(f, "Send error: {}", error),
+            ErrorKind::Receive(ref error) => write!(f, "Receive error: {}", error),
+            ErrorKind::Acquire(ref error) => write!(f, "Acquire error: {}", error),
+            ErrorKind::TryFromSlice(ref error) => write!(f, "TryFromSlice error: {}", error),
+            #[cfg(windows)]
+            ErrorKind::ContainsNull(ref error) => write!(f, "ContainsNull error: {}", error),
+            #[cfg(unix)]
+            ErrorKind::Nix(ref error) => write!(f, "Nix error: {}", error),
+            ErrorKind::StripPrefix(ref error) => write!(f, "StripPrefix error: {}", error),
+            ErrorKind::Ssh(ref error) => write!(f, "SSH error: {}", error),
+            ErrorKind::MissingQueue => write!(f, "Missing queue"),
+            ErrorKind::MaxRetries => write!(f, "Max retries"),
+            #[cfg(windows)]
+            ErrorKind::StatusError => write!(f, "Status error"),
+            ErrorKind::Failure(ref reason) => write!(f, "Failure: {}", reason),
+            ErrorKind::EmptyPath => write!(f, "Empty path"),
+            ErrorKind::InvalidExtension => write!(f, "Invalid extension"),
+        }
     }
 }
 

@@ -70,6 +70,12 @@ pub(crate) async fn main(
                     stats.total_data.fetch_sub(details.size as usize, Relaxed);
                 }
             }
+
+            if manifest.files.is_empty() {
+                info!("all files completed");
+                write_message(&mut str_stream, &Message::done(), &mut str_cipher).await?;
+                return Ok(());
+            }
         }
         Some(message::Message::Failure(failure)) => {
             error!("received failure message {}", failure.reason);
@@ -269,6 +275,19 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                 } else {
                     warn!(
                         "received failure message {} for unknown file {}",
+                        failure.reason, failure.id
+                    );
+                }
+            }
+            Some(message::Message::Failure(failure)) if failure.reason == 2 => {
+                if active.remove(&failure.id).is_some() {
+                    error!(
+                        "remote writer failed {} [TRANSFER WILL NOT BE RETRIED]",
+                        failure.description.unwrap()
+                    );
+                } else {
+                    warn!(
+                        "received writer failure message {} for unknown file {}",
                         failure.reason, failure.id
                     );
                 }
@@ -546,13 +565,10 @@ fn files_and_dirs(
             let path = entry.path();
 
             if path.is_dir() {
-                dirs.push(path.clone());
-
-                if dirs.len() > 1 && !recursive {
-                    continue;
+                if recursive {
+                    dirs.push(path.clone());
+                    files_and_dirs(&path, files, dirs, recursive)?;
                 }
-
-                files_and_dirs(&path, files, dirs, recursive)?;
             } else {
                 files.push(path);
             }

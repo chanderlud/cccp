@@ -12,7 +12,7 @@ use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, error, info, warn};
-use tokio::fs::{create_dir_all, metadata};
+use tokio::fs::{create_dir, metadata};
 use tokio::io::AsyncWrite;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::select;
@@ -62,11 +62,13 @@ pub(crate) async fn main(
 
     let filtered_files = manifest.files.into_iter().filter_map(|(id, details)| {
         // formats the path to the file locally
-        let path = if is_dir {
+        let path = if is_dir || options.destination.file_path.is_dir() {
             options.destination.file_path.join(&details.path)
         } else {
             options.destination.file_path.clone()
         };
+
+        debug!("formatted local path {:?} for {:?}", path, details.path);
 
         if path.exists() && !options.overwrite {
             completed.push(id);
@@ -89,7 +91,7 @@ pub(crate) async fn main(
                         .to_owned()
                         + ".partial"
                 } else {
-                    ".partial".to_string()
+                    "partial".to_string()
                 };
 
                 let partial_path = path.with_extension(partial_extension);
@@ -132,7 +134,12 @@ pub(crate) async fn main(
             stats.total_data.load(Relaxed)
         );
 
-        write_message(&mut str_stream, &Message::failure(0, 1), &mut str_cipher).await?;
+        write_message(
+            &mut str_stream,
+            &Message::failure(0, 1, None),
+            &mut str_cipher,
+        )
+        .await?;
 
         return Err(Error::failure(1));
     }
@@ -148,15 +155,20 @@ pub(crate) async fn main(
 
     // if the destination is a directory, create it
     if is_dir {
-        debug!("creating directory {:?}", options.destination.file_path);
-        create_dir_all(&options.destination.file_path).await?;
-    }
+        if !options.destination.file_path.exists() {
+            debug!("creating directory {:?}", options.destination.file_path);
+            create_dir(&options.destination.file_path).await?;
+        }
 
-    // create the local directories needed to write the files
-    for dir in &manifest.directories {
-        let local_dir = options.destination.file_path.join(dir);
-        debug!("creating directory {:?}", local_dir);
-        create_dir_all(local_dir).await?;
+        // create the local directories needed to write the files
+        for dir in &manifest.directories {
+            let local_dir = options.destination.file_path.join(dir);
+
+            if !local_dir.exists() {
+                debug!("creating directory {:?}", local_dir);
+                create_dir(local_dir).await?;
+            }
+        }
     }
 
     let sockets = socket_factory(
@@ -248,6 +260,7 @@ async fn controller<C: StreamCipherExt + ?Sized>(
     mut str_cipher: Box<C>,
 ) -> Result<()> {
     loop {
+        debug!("waiting for message");
         let message: Message = read_message(&mut str_stream, &mut str_cipher).await?;
 
         match message.message {
@@ -284,9 +297,13 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                     let details = details.clone();
 
                     async move {
-                        let result = writer(details, queue, confirmation, message).await;
+                        let result = writer(&details, queue, confirmation, &message).await;
 
                         if let Err(error) = result {
+                            message
+                                .send(Message::failure(details.id, 2, Some(error.to_string())))
+                                .await
+                                .unwrap();
                             error!("writer failed: {:?}", error);
                         }
                     }

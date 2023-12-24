@@ -28,9 +28,13 @@ impl Message {
         }
     }
 
-    pub(crate) fn failure(id: u32, reason: u32) -> Self {
+    pub(crate) fn failure(id: u32, reason: u32, description: Option<String>) -> Self {
         Self {
-            message: Some(message::Message::Failure(Failure { id, reason })),
+            message: Some(message::Message::Failure(Failure {
+                id,
+                reason,
+                description,
+            })),
         }
     }
 

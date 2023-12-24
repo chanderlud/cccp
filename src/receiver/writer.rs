@@ -40,17 +40,13 @@ impl SplitQueue {
         receivers.get(id).cloned()
     }
 
-    // TODO benchmark this
     pub(crate) async fn send(&self, job: Job, id: u32) -> Result<()> {
-        let sender_option = {
+        let sender = {
             let senders = self.senders.lock().await;
-            senders.get(&id).cloned()
+            senders.get(&id).ok_or(Error::missing_queue())?.clone()
         };
 
-        if let Some(sender) = sender_option {
-            sender.send(job).await?;
-        }
-
+        sender.send(job).await?;
         Ok(())
     }
 }
@@ -75,10 +71,10 @@ impl FileDetails {
 }
 
 pub(crate) async fn writer(
-    details: FileDetails,
+    details: &FileDetails,
     writer_queue: WriterQueue,
     confirmation_sender: AsyncSender<(u32, u64)>,
-    message_sender: AsyncSender<Message>,
+    message_sender: &AsyncSender<Message>,
 ) -> Result<()> {
     let file = OpenOptions::new()
         .write(true)
@@ -158,7 +154,9 @@ pub(crate) async fn writer(
         let local_hash = hash_file(&details.partial_path).await?; // hash the file
 
         if local_hash.as_bytes() != &remote_signature[..] {
-            message_sender.send(Message::failure(details.id, 0)).await?; // notify the sender
+            message_sender
+                .send(Message::failure(details.id, 0, None))
+                .await?; // notify the sender
             remove_file(&details.partial_path).await?; // remove the partial file
             return Err(Error::failure(0));
         } else {
