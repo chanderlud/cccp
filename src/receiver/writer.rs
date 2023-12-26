@@ -9,12 +9,11 @@ use tokio::fs::{remove_file, rename, OpenOptions};
 use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
+use crate::cipher::{make_cipher, StreamCipherWrapper};
 use crate::error::Error;
 use crate::items::{Crypto, Message};
 use crate::receiver::{Job, WriterQueue};
-use crate::{
-    hash_file, make_cipher, Result, StreamCipherExt, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE,
-};
+use crate::{hash_file, Result, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
 
 #[derive(Default)]
 pub(crate) struct SplitQueue {
@@ -87,7 +86,7 @@ pub(crate) async fn writer(
     let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
     writer.seek(SeekFrom::Start(position)).await?; // seek to the initial position
 
-    let mut cipher = details.crypto.as_ref().map(make_cipher);
+    let mut cipher = details.crypto.as_ref().map(make_cipher).transpose()?;
 
     if let Some(ref mut cipher) = cipher {
         cipher.seek(position);
@@ -173,7 +172,7 @@ pub(crate) async fn writer(
 
 /// write data and advance position
 #[inline]
-async fn write_data<T: AsyncWrite + Unpin, C: StreamCipherExt + ?Sized>(
+async fn write_data<T: AsyncWrite + Unpin, C: StreamCipherWrapper + ?Sized>(
     writer: &mut T,
     mut buffer: [u8; TRANSFER_BUFFER_SIZE],
     position: &mut u64,

@@ -38,9 +38,9 @@ impl Message {
         }
     }
 
-    pub(crate) fn done() -> Self {
+    pub(crate) fn done(reason: u32) -> Self {
         Self {
-            message: Some(message::Message::Done(Done {})),
+            message: Some(message::Message::Done(Done { reason })),
         }
     }
 }
@@ -48,14 +48,17 @@ impl Message {
 impl Cipher {
     /// the length of the key in bytes
     pub(crate) fn key_length(&self) -> usize {
-        32
+        match self {
+            Self::Chacha20 | Self::Chacha8 | Self::Aes256 => 32,
+            Self::Aes128 => 16,
+        }
     }
 
     /// the length of the iv in bytes
     pub(crate) fn iv_length(&self) -> usize {
         match self {
             Self::Chacha20 | Self::Chacha8 => 12,
-            Self::Aes => 16,
+            Self::Aes256 | Self::Aes128 => 16,
         }
     }
 }
@@ -63,9 +66,10 @@ impl Cipher {
 impl Display for Cipher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let cipher = match self {
-            Self::Aes => "aes",
-            Self::Chacha8 => "chacha8",
-            Self::Chacha20 => "chacha20",
+            Self::Aes128 => "AES128",
+            Self::Aes256 => "AES256",
+            Self::Chacha8 => "CHACHA8",
+            Self::Chacha20 => "CHACHA20",
         };
 
         write!(f, "{}", cipher)
@@ -75,5 +79,11 @@ impl Display for Cipher {
 impl StartIndex {
     pub(crate) fn new(index: u64) -> Self {
         Self { index }
+    }
+}
+
+impl Manifest {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.directories.is_empty()
     }
 }

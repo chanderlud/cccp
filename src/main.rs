@@ -7,30 +7,26 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aes::Aes256;
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
 use blake3::{Hash, Hasher};
-use chacha20::cipher::generic_array::GenericArray;
-use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
-use chacha20::{ChaCha20, ChaCha8};
 use clap::{CommandFactory, Parser};
-use ctr::Ctr128BE;
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info, warn};
-use prost::Message;
 use rpassword::prompt_password;
 use simple_logging::{log_to_file, log_to_stderr};
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
 use tokio::time::{interval, sleep};
 use tokio::{io, select};
 
-use crate::items::{Cipher, Crypto};
+use crate::cipher::CipherStream;
+
 use crate::options::{Mode, Options};
 
+mod cipher;
 mod error;
 mod items;
 mod options;
@@ -39,11 +35,6 @@ mod sender;
 
 // result alias used throughout
 type Result<T> = std::result::Result<T, error::Error>;
-
-trait StreamCipherExt: Send + Sync {
-    fn seek(&mut self, index: u64);
-    fn apply_keystream(&mut self, data: &mut [u8]);
-}
 
 // read buffer must be a multiple of the transfer buffer to prevent a nasty little bug
 const READ_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
@@ -59,36 +50,6 @@ const PACKET_SIZE: usize = 8 + ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE;
 // how long to wait for a job to be confirmed before requeuing it
 const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
 
-impl StreamCipherExt for ChaCha20 {
-    fn seek(&mut self, index: u64) {
-        StreamCipherSeek::seek(self, index);
-    }
-
-    fn apply_keystream(&mut self, buf: &mut [u8]) {
-        StreamCipher::apply_keystream(self, buf)
-    }
-}
-
-impl StreamCipherExt for ChaCha8 {
-    fn seek(&mut self, index: u64) {
-        StreamCipherSeek::seek(self, index);
-    }
-
-    fn apply_keystream(&mut self, buf: &mut [u8]) {
-        StreamCipher::apply_keystream(self, buf)
-    }
-}
-
-impl StreamCipherExt for Ctr128BE<Aes256> {
-    fn seek(&mut self, index: u64) {
-        StreamCipherSeek::seek(self, index);
-    }
-
-    fn apply_keystream(&mut self, buf: &mut [u8]) {
-        StreamCipher::apply_keystream(self, buf)
-    }
-}
-
 #[derive(Clone, Default)]
 struct TransferStats {
     confirmed_data: Arc<AtomicUsize>,
@@ -101,8 +62,14 @@ async fn main() -> Result<()> {
     let mut command = Options::command();
 
     match options.mode {
-        Mode::Local => log_to_stderr(options.log_level),
-        _ => log_to_file("cccp.log", options.log_level).expect("failed to log"),
+        Mode::Local => {
+            if let Some(path) = &options.log_file {
+                log_to_file(path, options.log_level)?
+            } else {
+                log_to_stderr(options.log_level)
+            }
+        }
+        _ => log_to_file("cccp.log", options.log_level)?,
     }
 
     // only the local client needs to handle input validation
@@ -147,14 +114,7 @@ async fn main() -> Result<()> {
             options.end_port = new_end;
         }
 
-        if options.destination.host.is_none() && options.source.host.is_none() {
-            command
-                .error(
-                    clap::error::ErrorKind::ValueValidation,
-                    "either the source or destination must be remote",
-                )
-                .exit();
-        } else if options.destination.is_local() && options.source.is_local() {
+        if options.destination.is_local() && options.source.is_local() {
             command
                 .error(
                     clap::error::ErrorKind::ValueValidation,
@@ -169,39 +129,35 @@ async fn main() -> Result<()> {
 
     let result = match options.mode {
         Mode::Local => {
-            let command_str = options.format_command(sender);
-
             let (local, remote) = if sender {
                 (&options.source, &mut options.destination)
             } else {
                 (&options.destination, &mut options.source)
             };
 
-            if remote.username.is_none() {
-                warn!(
-                    "username not specified for remote host (trying \"\"): {}",
-                    remote
-                );
-                remote.username = Some(String::new());
-            } else if remote.host.is_none() {
+            if remote.host.is_none() {
                 command
                     .error(
                         clap::error::ErrorKind::ValueValidation,
-                        format!("host must be specified for remote host: {}", remote),
+                        format!("host must be specified for remote IoSpec: {}", remote),
                     )
                     .exit();
+            } else if remote.username.is_none() {
+                remote.username = Some(whoami::username());
             }
 
             debug!("local {}", local);
             debug!("remote {}", remote);
 
-            let mut auth_method = ssh_key_auth().await.unwrap_or_else(|error| {
-                warn!("failed to use ssh key auth: {}", error);
-                password_auth().unwrap()
-            });
+            let mut auth_method = if let Ok(auth) = ssh_key_auth().await {
+                auth
+            } else {
+                password_auth()?
+            };
 
             // unwrap is safe because we check for a host above
             let remote_addr = remote.host.unwrap();
+            let remote_ip = remote_addr.ip();
 
             let client = loop {
                 match Client::connect(
@@ -229,6 +185,8 @@ async fn main() -> Result<()> {
 
             info!("connected to the remote host via ssh");
 
+            let command_str = options.format_command(sender);
+
             let command_handle = tokio::spawn(async move {
                 info!("executing command on remote host");
                 debug!("command: {}", command_str);
@@ -237,15 +195,14 @@ async fn main() -> Result<()> {
             });
 
             // receiver -> sender stream
-            let rts_stream =
-                connect_stream(remote_addr.ip(), options.start_port, options.bind_address).await?;
+            let stream =
+                connect_stream(remote_ip, options.start_port, options.bind_address).await?;
+            let rts_stream = CipherStream::new(stream, &options.control_crypto)?;
+
             // sender -> receiver stream
-            let str_stream = connect_stream(
-                remote_addr.ip(),
-                options.start_port + 1,
-                options.bind_address,
-            )
-            .await?;
+            let stream =
+                connect_stream(remote_ip, options.start_port + 1, options.bind_address).await?;
+            let str_stream = CipherStream::new(stream, &options.control_crypto)?;
 
             let display_handle = tokio::spawn({
                 let stats = stats.clone();
@@ -255,23 +212,9 @@ async fn main() -> Result<()> {
 
             let main_future = async {
                 if sender {
-                    sender::main(
-                        options,
-                        stats.clone(),
-                        rts_stream,
-                        str_stream,
-                        remote_addr.ip(),
-                    )
-                    .await
+                    sender::main(options, stats, rts_stream, str_stream, remote_ip).await
                 } else {
-                    receiver::main(
-                        options,
-                        stats.clone(),
-                        rts_stream,
-                        str_stream,
-                        remote_addr.ip(),
-                    )
-                    .await
+                    receiver::main(options, stats, rts_stream, str_stream, remote_ip).await
                 }
             };
 
@@ -280,18 +223,13 @@ async fn main() -> Result<()> {
 
                 match result {
                     Ok(Ok(result)) => {
-                        match result.exit_status {
-                            0 => {
-                                info!("remote client exited successfully");
-                                // wait forever to allow the other futures to complete
-                                sleep(Duration::from_secs(u64::MAX)).await;
-                            }
-                            1 => error!("remote client failed, file not found"),
-                            2 => error!("remote client failed, unknown IO error"),
-                            3 => error!("remote client failed, parse error"),
-                            4 => error!("remote client failed, decode error"),
-                            5 => error!("remote client failed, join error"),
-                            _ => error!("remote client failed, unknown error"),
+                        if result.exit_status != 0 {
+                            // return to terminate execution
+                            error!("remote command failed: {:?}", result);
+                        } else {
+                            info!("remote client exited successfully");
+                            // wait forever to allow the other futures to complete
+                            sleep(Duration::from_secs(u64::MAX)).await;
                         }
                     }
                     Ok(Err(error)) => error!("remote client failed: {}", error), // return to terminate execution
@@ -308,11 +246,15 @@ async fn main() -> Result<()> {
         Mode::Remote(sender) => {
             // receiver -> sender stream
             let listener = TcpListener::bind(("0.0.0.0", options.start_port)).await?;
-            let (rts_stream, remote_addr) = listener.accept().await?;
+            let (stream, remote_addr) = listener.accept().await?;
+
+            let rts_stream = CipherStream::new(stream, &options.control_crypto)?;
 
             // sender -> receiver stream
             let listener = TcpListener::bind(("0.0.0.0", options.start_port + 1)).await?;
-            let (str_stream, _) = listener.accept().await?;
+            let (stream, _) = listener.accept().await?;
+
+            let str_stream = CipherStream::new(stream, &options.control_crypto)?;
 
             let remote_addr = remote_addr.ip();
 
@@ -431,44 +373,6 @@ async fn connect_stream(
     }
 }
 
-/// write a `Message` to a writer
-async fn write_message<W: AsyncWrite + Unpin, M: Message, C: StreamCipherExt + ?Sized>(
-    writer: &mut W,
-    message: &M,
-    cipher: &mut Box<C>,
-) -> Result<()> {
-    let len = message.encoded_len(); // get the length of the message
-    writer.write_u32(len as u32).await?; // write the length of the message
-
-    let mut buffer = Vec::with_capacity(len); // create a buffer to write the message into
-    message.encode(&mut buffer).unwrap(); // encode the message into the buffer (infallible)
-    cipher.apply_keystream(&mut buffer[..]); // encrypt the message
-
-    writer.write_all(&buffer).await?; // write the message to the writer
-
-    Ok(())
-}
-
-/// read a `Message` from a reader
-async fn read_message<
-    R: AsyncReadExt + Unpin,
-    M: Message + Default,
-    C: StreamCipherExt + ?Sized,
->(
-    reader: &mut R,
-    cipher: &mut Box<C>,
-) -> Result<M> {
-    let len = reader.read_u32().await? as usize; // read the length of the message
-
-    let mut buffer = vec![0; len]; // create a buffer to read the message into
-    reader.read_exact(&mut buffer).await?; // read the message into the buffer
-    cipher.apply_keystream(&mut buffer[..]); // decrypt the message
-
-    let message = M::decode(&buffer[..])?; // decode the message
-
-    Ok(message)
-}
-
 async fn hash_file<P: AsRef<Path>>(path: P) -> io::Result<Hash> {
     let file = File::open(path).await?;
     let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
@@ -487,27 +391,4 @@ async fn hash_file<P: AsRef<Path>>(path: P) -> io::Result<Hash> {
     }
 
     Ok(hasher.finalize())
-}
-
-fn make_cipher(crypto: &Crypto) -> Box<dyn StreamCipherExt> {
-    let key = GenericArray::from_slice(&crypto.key[..32]);
-
-    match crypto.cipher.try_into() {
-        Ok(Cipher::Aes) => {
-            let iv = GenericArray::from_slice(&crypto.key[..16]);
-
-            Box::new(Ctr128BE::<Aes256>::new(key, iv))
-        }
-        Ok(Cipher::Chacha8) => {
-            let iv = GenericArray::from_slice(&crypto.key[..12]);
-
-            Box::new(ChaCha8::new(key, iv))
-        }
-        Ok(Cipher::Chacha20) => {
-            let iv = GenericArray::from_slice(&crypto.key[..12]);
-
-            Box::new(ChaCha20::new(key, iv))
-        }
-        _ => unreachable!(),
-    }
 }

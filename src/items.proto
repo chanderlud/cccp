@@ -35,9 +35,10 @@ message Crypto {
 }
 
 enum Cipher {
-  AES = 0;
-  CHACHA8 = 1;
+  CHACHA8 = 0;
+  AES128 = 1;
   CHACHA20 = 2;
+  AES256 = 3;
 }
 
 // the receiver already had these files
@@ -78,4 +79,6 @@ message Failure {
 }
 
 // signals the receiver that the sender won't start new transfers
-message Done {}
+message Done {
+    uint32 reason = 1;
+}

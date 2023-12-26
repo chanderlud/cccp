@@ -12,19 +12,19 @@ use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, error, info, warn};
-use tokio::io::{self, AsyncReadExt};
+use tokio::io;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::select;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{interval, Instant};
 
+use crate::cipher::make_cipher;
 use crate::error::Error;
 use crate::items::{message, Confirmations, FileDetail, Manifest, Message, StartIndex};
 use crate::sender::reader::reader;
 use crate::{
-    hash_file, make_cipher, read_message, socket_factory, write_message, Options, Result,
-    StreamCipherExt, TransferStats, ID_SIZE, INDEX_SIZE, MAX_RETRIES, REQUEUE_INTERVAL,
-    TRANSFER_BUFFER_SIZE,
+    hash_file, socket_factory, CipherStream, Options, Result, TransferStats, ID_SIZE, INDEX_SIZE,
+    MAX_RETRIES, REQUEUE_INTERVAL, TRANSFER_BUFFER_SIZE,
 };
 
 mod reader;
@@ -41,25 +41,24 @@ struct Job {
 pub(crate) async fn main(
     options: Options,
     stats: TransferStats,
-    rts_stream: TcpStream,
-    mut str_stream: TcpStream,
+    rts_stream: CipherStream<TcpStream>,
+    mut str_stream: CipherStream<TcpStream>,
     remote_addr: IpAddr,
 ) -> Result<()> {
     info!("sending {} -> {}", options.source, options.destination);
 
-    let mut str_cipher = make_cipher(&options.control_crypto);
-    let rts_cipher = make_cipher(&options.control_crypto);
-
     let mut manifest = build_manifest(&options, &stats.total_data).await?;
 
-    debug!(
-        "sending manifest | files={} dirs={}",
-        manifest.files.len(),
-        manifest.directories.len()
-    );
-    write_message(&mut str_stream, &manifest, &mut str_cipher).await?;
+    if manifest.is_empty() {
+        warn!("found no files to send");
+        str_stream.write_message(&Message::done(0)).await?;
+        return Ok(());
+    }
 
-    let message: Message = read_message(&mut str_stream, &mut str_cipher).await?;
+    debug!("sending manifest");
+    str_stream.write_message(&manifest).await?;
+
+    let message: Message = str_stream.read_message().await?;
 
     match message.message {
         Some(message::Message::Completed(completed)) => {
@@ -73,7 +72,7 @@ pub(crate) async fn main(
 
             if manifest.files.is_empty() {
                 info!("all files completed");
-                write_message(&mut str_stream, &Message::done(), &mut str_cipher).await?;
+                str_stream.write_message(&Message::done(1)).await?;
                 return Ok(());
             }
         }
@@ -81,7 +80,7 @@ pub(crate) async fn main(
             error!("received failure message {}", failure.reason);
             return Err(Error::failure(failure.reason));
         }
-        _ => unreachable!("received unexpected message: {:?}", message),
+        _ => return Err(Error::unexpected_message(Box::new(message))),
     }
 
     let sockets = socket_factory(
@@ -114,7 +113,6 @@ pub(crate) async fn main(
         rts_stream,
         confirmation_sender,
         controller_sender,
-        rts_cipher,
     ));
 
     let confirmation_handle = tokio::spawn(receive_confirmations(
@@ -128,15 +126,13 @@ pub(crate) async fn main(
     tokio::spawn(add_permits_at_rate(send.clone(), options.pps()));
 
     let controller_handle = tokio::spawn(controller(
+        options,
         str_stream,
         manifest.files,
         job_sender.clone(),
         read,
         stats.confirmed_data,
-        options.source.file_path,
         controller_receiver,
-        options.max,
-        str_cipher,
     ));
 
     let handles: Vec<_> = sockets
@@ -204,23 +200,20 @@ async fn sender(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn controller<C: StreamCipherExt + ?Sized>(
-    mut control_stream: TcpStream,
+async fn controller(
+    options: Options,
+    mut control_stream: CipherStream<TcpStream>,
     mut files: HashMap<u32, FileDetail>,
     job_sender: AsyncSender<Job>,
     read: Arc<Semaphore>,
     confirmed_data: Arc<AtomicUsize>,
-    base_path: PathBuf,
     controller_receiver: AsyncReceiver<Message>,
-    max: usize,
-    mut cipher: Box<C>,
 ) -> Result<()> {
     let mut id = 0;
-    let mut active: HashMap<u32, FileDetail> = HashMap::with_capacity(max);
+    let mut active: HashMap<u32, FileDetail> = HashMap::with_capacity(options.max);
 
     loop {
-        while active.len() < max && !files.is_empty() {
+        while active.len() < options.max && !files.is_empty() {
             match files.remove(&id) {
                 None => id += 1,
                 Some(details) => {
@@ -228,11 +221,10 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                         &mut control_stream,
                         id,
                         &details,
-                        &base_path,
+                        &options.source.file_path,
                         &job_sender,
                         &read,
                         &confirmed_data,
-                        &mut cipher,
                     )
                     .await?;
 
@@ -244,7 +236,9 @@ async fn controller<C: StreamCipherExt + ?Sized>(
 
         debug!("waiting for a message");
 
-        match controller_receiver.recv().await?.message {
+        let message: Message = controller_receiver.recv().await?;
+
+        match message.message {
             Some(message::Message::End(end)) => {
                 if active.remove(&end.id).is_none() {
                     warn!("received end message for unknown file {}", end.id);
@@ -265,40 +259,33 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                         &mut control_stream,
                         failure.id,
                         details,
-                        &base_path,
+                        &options.source.file_path,
                         &job_sender,
                         &read,
                         &confirmed_data,
-                        &mut cipher,
                     )
                     .await?;
                 } else {
-                    warn!(
-                        "received failure message {} for unknown file {}",
-                        failure.reason, failure.id
-                    );
+                    warn!("received failure message {:?} for unknown file", failure);
                 }
             }
             Some(message::Message::Failure(failure)) if failure.reason == 2 => {
                 if active.remove(&failure.id).is_some() {
                     error!(
                         "remote writer failed {} [TRANSFER WILL NOT BE RETRIED]",
-                        failure.description.unwrap()
+                        failure.description.unwrap() // the description is always present for this failure reason
                     );
                 } else {
                     warn!(
-                        "received writer failure message {} for unknown file {}",
-                        failure.reason, failure.id
+                        "received writer failure message {:?} for unknown file",
+                        failure
                     );
                 }
             }
             Some(message::Message::Failure(failure)) => {
-                warn!(
-                    "received unknown failure message {} for file {}",
-                    failure.reason, failure.id
-                );
+                warn!("received unknown failure message {:?}", failure);
             }
-            _ => unreachable!(), // only end and failure messages are sent to this receiver
+            _ => return Err(Error::unexpected_message(Box::new(message))),
         }
 
         if files.is_empty() && active.is_empty() {
@@ -307,26 +294,26 @@ async fn controller<C: StreamCipherExt + ?Sized>(
     }
 
     debug!("all files completed, sending done message");
-    write_message(&mut control_stream, &Message::done(), &mut cipher).await?;
+    control_stream.write_message(&Message::done(2)).await?;
 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn start_file_transfer<C: StreamCipherExt + ?Sized>(
-    mut control_stream: &mut TcpStream,
+async fn start_file_transfer(
+    control_stream: &mut CipherStream<TcpStream>,
     id: u32,
     details: &FileDetail,
     base_path: &Path,
     job_sender: &AsyncSender<Job>,
     read: &Arc<Semaphore>,
     confirmed_data: &Arc<AtomicUsize>,
-    cipher: &mut Box<C>,
 ) -> Result<()> {
-    write_message(&mut control_stream, &Message::start(id), cipher).await?;
+    control_stream.write_message(&Message::start(id)).await?;
 
-    let start_index: StartIndex = read_message(&mut control_stream, cipher).await?;
+    let start_index: StartIndex = control_stream.read_message().await?;
     confirmed_data.fetch_add(start_index.index as usize, Relaxed);
+
+    let cipher = details.crypto.as_ref().map(make_cipher).transpose()?;
 
     tokio::spawn({
         let job_sender = job_sender.clone();
@@ -335,21 +322,13 @@ async fn start_file_transfer<C: StreamCipherExt + ?Sized>(
         let base_path = base_path.to_path_buf();
 
         let path = if base_path.is_dir() {
-            base_path.join(&details.path)
+            base_path.join(details.path)
         } else {
             base_path
         };
 
         async move {
-            let result = reader(
-                path,
-                job_sender,
-                read,
-                start_index.index,
-                id,
-                details.crypto.as_ref().map(make_cipher),
-            )
-            .await;
+            let result = reader(path, job_sender, read, start_index.index, id, cipher).await;
 
             if let Err(error) = result {
                 error!("reader failed: {:?}", error);
@@ -460,14 +439,13 @@ async fn add_permits_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
 }
 
 /// split the message stream into `Confirmation` and `End + Failure` messages
-async fn split_receiver<R: AsyncReadExt + Unpin, C: StreamCipherExt + ?Sized>(
-    mut reader: R,
+async fn split_receiver(
+    mut stream: CipherStream<TcpStream>,
     confirmation_sender: AsyncSender<Confirmations>,
     controller_sender: AsyncSender<Message>,
-    mut cipher: Box<C>,
 ) -> Result<()> {
     loop {
-        let message: Message = read_message(&mut reader, &mut cipher).await?;
+        let message: Message = stream.read_message().await?;
 
         match message.message {
             Some(message::Message::Confirmations(confirmations)) => {
@@ -482,6 +460,7 @@ async fn split_receiver<R: AsyncReadExt + Unpin, C: StreamCipherExt + ?Sized>(
     }
 }
 
+/// builds a manifest of the files to send and some details about them
 async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Result<Manifest> {
     // collect the files and directories to send
     let mut files = Vec::new();
@@ -493,8 +472,8 @@ async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Res
         &mut dirs,
         options.recursive,
     )?;
-    let files_len = files.len();
-    debug!("found {} files & {} dirs", files_len, dirs.len());
+
+    debug!("found {} files & {} dirs", files.len(), dirs.len());
 
     let file_map: HashMap<u32, FileDetail> = iter(files.into_iter().enumerate())
         .map(|(index, mut file)| async move {
@@ -553,15 +532,19 @@ async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Res
     Ok(manifest)
 }
 
-/// recursively collect all files and directories in a directory
+/// collect all files and directories in a directory
 fn files_and_dirs(
-    source: &Path,
+    path: &Path,
     files: &mut Vec<PathBuf>,
     dirs: &mut Vec<PathBuf>,
     recursive: bool,
 ) -> io::Result<()> {
-    if source.is_dir() {
-        for entry in source.read_dir()?.filter_map(std::result::Result::ok) {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    if path.is_dir() {
+        for entry in path.read_dir()?.filter_map(std::result::Result::ok) {
             let path = entry.path();
 
             if path.is_dir() {
@@ -574,7 +557,7 @@ fn files_and_dirs(
             }
         }
     } else {
-        files.push(source.to_path_buf());
+        files.push(path.to_path_buf());
     }
 
     Ok(())

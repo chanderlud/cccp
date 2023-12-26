@@ -1,8 +1,8 @@
 use std::array::TryFromSliceError;
 use std::fmt::Formatter;
-use std::process::{ExitCode, Termination};
 
 use kanal::{ReceiveError, SendError};
+use prost::Message;
 use tokio::io;
 use tokio::sync::AcquireError;
 
@@ -34,6 +34,7 @@ pub(crate) enum ErrorKind {
     Failure(u32),
     EmptyPath,
     InvalidExtension,
+    UnexpectedMessage(Box<dyn Message>),
 }
 
 impl From<io::Error> for Error {
@@ -134,24 +135,6 @@ impl From<async_ssh2_tokio::Error> for Error {
     }
 }
 
-impl Termination for Error {
-    fn report(self) -> ExitCode {
-        ExitCode::from(match self.kind {
-            ErrorKind::Io(error) => match error.kind() {
-                io::ErrorKind::NotFound => 1,
-                _ => 2,
-            },
-            ErrorKind::AddrParse(_) => 3,
-            ErrorKind::Decode(_) => 4,
-            ErrorKind::Join(_) => 5,
-            ErrorKind::Send(_) => 6,
-            ErrorKind::Receive(_) => 7,
-            ErrorKind::Acquire(_) => 8,
-            _ => 9,
-        })
-    }
-}
-
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
@@ -176,6 +159,9 @@ impl std::fmt::Display for Error {
             ErrorKind::Failure(ref reason) => write!(f, "Failure: {}", reason),
             ErrorKind::EmptyPath => write!(f, "Empty path"),
             ErrorKind::InvalidExtension => write!(f, "Invalid extension"),
+            ErrorKind::UnexpectedMessage(ref message) => {
+                write!(f, "Unexpected message {:?}", message)
+            }
         }
     }
 }
@@ -208,6 +194,12 @@ impl Error {
     pub(crate) fn invalid_extension() -> Self {
         Self {
             kind: ErrorKind::InvalidExtension,
+        }
+    }
+
+    pub(crate) fn unexpected_message(message: Box<dyn Message>) -> Self {
+        Self {
+            kind: ErrorKind::UnexpectedMessage(message),
         }
     }
 

@@ -16,13 +16,23 @@ use tokio::io;
 use crate::items::{Cipher, Crypto};
 use crate::PACKET_SIZE;
 
+const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
+  cccp is a fast, secure, and reliable file transfer utility
+
+\x1B[1m\x1B[4mIoSpec\x1B[0m
+  - [user@][host:{port:}]file
+  - If no user is set for a remote host, the current user is used
+  - If no port is provided, port 22 is used
+  - Either the InSpec or OutSpec should be remote, not both or neither
+
+\x1B[1m\x1B[4mCiphers\x1B[0m
+  - CHACHA8
+  - CHAHA20
+  - AES128
+  - AES256";
+
 #[derive(Parser, Clone, Debug)]
-#[clap(
-    name = "cccp",
-    version,
-    author,
-    about = "A fast and secure file transfer utility"
-)]
+#[clap(version, about = HELP_HEADING)]
 pub(crate) struct Options {
     // the user does not need to set this
     #[clap(long, hide = true, default_value = "local")]
@@ -53,7 +63,7 @@ pub(crate) struct Options {
     pub(crate) max: usize,
 
     /// Encrypt the control stream
-    #[clap(short, long, default_value = "aes")]
+    #[clap(short, long, default_value = "AES256")]
     pub(crate) control_crypto: Crypto,
 
     /// Verify integrity of transfers using blake3
@@ -76,11 +86,15 @@ pub(crate) struct Options {
     #[clap(short, long)]
     pub(crate) bind_address: Option<IpAddr>,
 
-    /// The source file or directory
+    /// Log to a file (default: stderr)
+    #[clap(short = 'L', long)]
+    pub(crate) log_file: Option<PathBuf>,
+
+    /// The source IoSpec (InSpec)
     #[clap()]
     pub(crate) source: IoSpec,
 
-    /// The destination file or directory
+    /// The destination IoSpec (OutSpec)
     #[clap()]
     pub(crate) destination: IoSpec,
 }
@@ -151,24 +165,21 @@ impl FromStr for Crypto {
     type Err = OptionParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let captures = Regex::new("([A-Za-z\\d]+)(?::([A-Za-z0-9+/]+))?(?::([A-Za-z0-9+/]+))?")
-            .unwrap() // infallible
-            .captures(s)
-            .ok_or(Self::Err::invalid_cipher_format())?;
+        let mut captures = s.split(':');
 
-        // unwrap is safe because the regex requires a cipher name
-        let cipher_str = captures.get(1).unwrap().as_str().to_uppercase();
+        // unwrap is safe because there will always be at least one capture
+        let cipher_str = captures.next().unwrap().to_uppercase();
         let cipher = Cipher::from_str_name(&cipher_str).ok_or(Self::Err::invalid_cipher())?;
 
         let key = captures
-            .get(2)
-            .map(|m| STANDARD_NO_PAD.decode(m.as_str()))
+            .next()
+            .map(|m| STANDARD_NO_PAD.decode(m))
             .transpose()? // propagate the decode error
             .unwrap_or_else(|| random_bytes(cipher.key_length()));
 
         let iv = captures
-            .get(3)
-            .map(|m| STANDARD_NO_PAD.decode(m.as_str()))
+            .next()
+            .map(|m| STANDARD_NO_PAD.decode(m))
             .transpose()? // propagate the decode error
             .unwrap_or_else(|| random_bytes(cipher.iv_length()));
 
@@ -188,6 +199,7 @@ impl FromStr for Crypto {
 
 impl Display for Crypto {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // encode the key & iv to base64
         let key = STANDARD_NO_PAD.encode(&self.key);
         let iv = STANDARD_NO_PAD.encode(&self.iv);
 
@@ -213,7 +225,7 @@ impl FromStr for IoSpec {
     type Err = OptionParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let captures = Regex::new("(?:([\\w-]+)@([\\w.-]+)(?::(\\d+))?:)?([ \\w/.-]+)")
+        let captures = Regex::new("(?:(?:([\\w-]+)@)?([\\w.-]+)(?::(\\d+))?:)?([ \\w/.-]+)")
             .unwrap() // infallible
             .captures(s)
             .ok_or(Self::Err::malformed_io_spec("Invalid IO spec"))?;
@@ -290,7 +302,6 @@ enum ErrorKind {
     MalformedIoSpec(&'static str),
     UnknownMode,
     InvalidCipher,
-    InvalidCipherFormat,
     InvalidKey,
     InvalidIv,
     NoSuchHost,
@@ -309,7 +320,6 @@ impl Display for OptionParseError {
                 ErrorKind::MalformedIoSpec(message) => message,
                 ErrorKind::UnknownMode => "The mode can be either sender or receiver",
                 ErrorKind::InvalidCipher => "Invalid cipher",
-                ErrorKind::InvalidCipherFormat => "Invalid cipher format",
                 ErrorKind::InvalidKey => "Invalid key",
                 ErrorKind::InvalidIv => "Invalid IV",
                 ErrorKind::NoSuchHost => "No such host",
@@ -353,12 +363,6 @@ impl OptionParseError {
     fn invalid_cipher() -> Self {
         Self {
             kind: ErrorKind::InvalidCipher,
-        }
-    }
-
-    fn invalid_cipher_format() -> Self {
-        Self {
-            kind: ErrorKind::InvalidCipherFormat,
         }
     }
 

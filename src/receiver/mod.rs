@@ -13,7 +13,6 @@ use futures::{StreamExt, TryStreamExt};
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, error, info, warn};
 use tokio::fs::{create_dir, metadata};
-use tokio::io::AsyncWrite;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::select;
 use tokio::sync::Mutex;
@@ -24,8 +23,8 @@ use crate::error::Error;
 use crate::items::{message, ConfirmationIndexes, Manifest, Message, StartIndex};
 use crate::receiver::writer::{writer, FileDetails, SplitQueue};
 use crate::{
-    make_cipher, read_message, socket_factory, write_message, Options, Result, StreamCipherExt,
-    TransferStats, ID_SIZE, INDEX_SIZE, MAX_RETRIES, RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
+    socket_factory, CipherStream, Options, Result, TransferStats, ID_SIZE, INDEX_SIZE, MAX_RETRIES,
+    RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
 };
 
 mod writer;
@@ -41,16 +40,13 @@ struct Job {
 pub(crate) async fn main(
     options: Options,
     stats: TransferStats,
-    rts_stream: TcpStream,
-    mut str_stream: TcpStream,
+    rts_stream: CipherStream<TcpStream>,
+    mut str_stream: CipherStream<TcpStream>,
     remote_addr: IpAddr,
 ) -> Result<()> {
     info!("receiving {} -> {}", options.source, options.destination);
 
-    let mut str_cipher = make_cipher(&options.control_crypto);
-    let rts_cipher = make_cipher(&options.control_crypto);
-
-    let manifest: Manifest = read_message(&mut str_stream, &mut str_cipher).await?;
+    let manifest: Manifest = str_stream.read_message().await?;
     let is_dir = manifest.files.len() > 1; // if multiple files are being received, the destination should be a directory
     debug!(
         "received manifest | files={} dirs={}",
@@ -134,24 +130,18 @@ pub(crate) async fn main(
             stats.total_data.load(Relaxed)
         );
 
-        write_message(
-            &mut str_stream,
-            &Message::failure(0, 1, None),
-            &mut str_cipher,
-        )
-        .await?;
+        str_stream
+            .write_message(&Message::failure(0, 1, None))
+            .await?;
 
         return Err(Error::failure(1));
     }
 
     debug!("sending completed: {:?}", completed);
     // send the completed message to the remote client
-    write_message(
-        &mut str_stream,
-        &Message::completed(completed),
-        &mut str_cipher,
-    )
-    .await?;
+    str_stream
+        .write_message(&Message::completed(completed))
+        .await?;
 
     // if the destination is a directory, create it
     if is_dir {
@@ -186,7 +176,7 @@ pub(crate) async fn main(
 
     // `message_sender` can now be used to send messages to the sender
     let (message_sender, message_receiver) = kanal::unbounded_async();
-    tokio::spawn(send_messages(rts_stream, message_receiver, rts_cipher));
+    let message_sender_handle = tokio::spawn(send_messages(rts_stream, message_receiver));
 
     let confirmation_handle = tokio::spawn(send_confirmations(
         message_sender.clone(),
@@ -200,7 +190,6 @@ pub(crate) async fn main(
         writer_queue.clone(),
         confirmation_sender,
         message_sender,
-        str_cipher,
     ));
 
     let handles: Vec<_> = sockets
@@ -220,6 +209,7 @@ pub(crate) async fn main(
         result = confirmation_handle => { debug!("confirmation sender exited: {:?}", result); result? },
         result = controller_handle => { debug!("controller exited: {:?}", result); result? },
         result = receiver_future => { debug!("receivers exited: {:?}", result); result },
+        result = message_sender_handle => { debug!("message sender exited: {:?}", result); result? }
     }
 }
 
@@ -237,7 +227,10 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) -> Result<()> {
                 let index = u64::from_be_bytes(buf[ID_SIZE..INDEX_SIZE + ID_SIZE].try_into()?);
                 let data = buf[INDEX_SIZE + ID_SIZE..].try_into()?;
 
-                queue.send(Job { data, index }, id).await?;
+                if queue.send(Job { data, index }, id).await.is_err() {
+                    // a message was received for a file that has already been completed (probably)
+                    debug!("failed to send job for {} to writer", id);
+                }
             }
             Ok(Ok(_)) => warn!("0 byte read?"), // this should never happen
             Ok(Err(_)) | Err(_) => retries += 1, // catch errors and timeouts
@@ -251,17 +244,16 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) -> Result<()> {
     }
 }
 
-async fn controller<C: StreamCipherExt + ?Sized>(
-    mut str_stream: TcpStream,
+async fn controller(
+    mut control_stream: CipherStream<TcpStream>,
     mut files: HashMap<u32, FileDetails>,
     writer_queue: WriterQueue,
     confirmation_sender: AsyncSender<(u32, u64)>,
     message_sender: AsyncSender<Message>,
-    mut str_cipher: Box<C>,
 ) -> Result<()> {
     loop {
         debug!("waiting for message");
-        let message: Message = read_message(&mut str_stream, &mut str_cipher).await?;
+        let message: Message = control_stream.read_message().await?;
 
         match message.message {
             Some(message::Message::Start(message)) => {
@@ -281,12 +273,9 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                 }
 
                 // send the start index to the remote client
-                write_message(
-                    &mut str_stream,
-                    &StartIndex::new(details.start_index),
-                    &mut str_cipher,
-                )
-                .await?;
+                control_stream
+                    .write_message(&StartIndex::new(details.start_index))
+                    .await?;
 
                 writer_queue.push_queue(message.id).await; // create a queue for the writer
 
@@ -309,12 +298,18 @@ async fn controller<C: StreamCipherExt + ?Sized>(
                     }
                 });
             }
-            Some(message::Message::Done(_)) => {
-                debug!("received done message");
+            Some(message::Message::Done(message)) => {
+                match message.reason {
+                    0 => warn!("remote client found no files to send"),
+                    1 => debug!("all transfers were completed before execution"),
+                    2 => debug!("remote client completed all transfers"),
+                    _ => break Err(Error::unexpected_message(Box::new(message))),
+                }
+
                 message_sender.close();
                 break Ok(());
             }
-            _ => unreachable!("controller received unexpected message: {:?}", message),
+            _ => return Err(Error::unexpected_message(Box::new(message))),
         }
     }
 }
@@ -373,14 +368,13 @@ async fn send_confirmations(
     }
 }
 
-/// send messages from a channel to a writer
-async fn send_messages<W: AsyncWrite + Unpin, M: prost::Message, C: StreamCipherExt + ?Sized>(
-    mut writer: W,
+/// send messages from a channel to a cipher stream
+async fn send_messages<M: prost::Message>(
+    mut stream: CipherStream<TcpStream>,
     receiver: AsyncReceiver<M>,
-    mut cipher: Box<C>,
 ) -> Result<()> {
     while let Ok(message) = receiver.recv().await {
-        write_message(&mut writer, &message, &mut cipher).await?;
+        stream.write_message(&message).await?;
     }
 
     Ok(())

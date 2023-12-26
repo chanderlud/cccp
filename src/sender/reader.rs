@@ -8,10 +8,11 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio::sync::Semaphore;
 
+use crate::cipher::StreamCipherWrapper;
 use crate::sender::Job;
-use crate::{Result, StreamCipherExt, ID_SIZE, INDEX_SIZE, READ_BUFFER_SIZE, TRANSFER_BUFFER_SIZE};
+use crate::{Result, ID_SIZE, INDEX_SIZE, READ_BUFFER_SIZE, TRANSFER_BUFFER_SIZE};
 
-pub(crate) async fn reader<C: StreamCipherExt + ?Sized>(
+pub(crate) async fn reader<C: StreamCipherWrapper + ?Sized>(
     path: PathBuf,
     queue: AsyncSender<Job>,
     read: Arc<Semaphore>,
