@@ -120,21 +120,23 @@ pub(crate) async fn main(
         completed.len()
     );
 
-    let free_space = free_space(&options.destination.file_path)?;
-    debug!("free space: {}", free_space);
+    if !options.force {
+        let free_space = free_space(&options.destination.file_path)?;
+        debug!("free space: {}", free_space);
 
-    if free_space < stats.total_data.load(Relaxed) as u64 {
-        error!(
-            "not enough free space {} / {}",
-            free_space,
-            stats.total_data.load(Relaxed)
-        );
+        if free_space < stats.total_data.load(Relaxed) as u64 {
+            error!(
+                "not enough free space {} / {}",
+                free_space,
+                stats.total_data.load(Relaxed)
+            );
 
-        str_stream
-            .write_message(&Message::failure(0, 1, None))
-            .await?;
+            str_stream
+                .write_message(&Message::failure(0, 1, None))
+                .await?;
 
-        return Err(Error::failure(1));
+            return Err(Error::failure(1));
+        }
     }
 
     debug!("sending completed: {:?}", completed);

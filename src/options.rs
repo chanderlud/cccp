@@ -74,9 +74,13 @@ pub(crate) struct Options {
     #[clap(short, long)]
     pub(crate) overwrite: bool,
 
-    /// Include subdirectories recursively
+    /// Include subdirectories and files recursively
     #[clap(short = 'R', long)]
     pub(crate) recursive: bool,
+
+    /// Force the transfer even if the there is not enough space
+    #[clap(short, long)]
+    pub(crate) force: bool,
 
     /// Optionally encrypt the data stream
     #[clap(short = 'S', long)]
@@ -126,6 +130,10 @@ impl Options {
 
         if self.recursive {
             arguments.push(String::from("-R"))
+        }
+
+        if self.force {
+            arguments.push(String::from("-f"))
         }
 
         arguments.push(format!("\"{}\"", self.source));
