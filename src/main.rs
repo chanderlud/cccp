@@ -19,7 +19,7 @@ use simple_logging::{log_to_file, log_to_stderr};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
-use tokio::time::{interval, sleep};
+use tokio::time::{Instant, interval, sleep};
 use tokio::{io, select};
 
 use crate::cipher::CipherStream;
@@ -330,10 +330,11 @@ fn password_auth() -> io::Result<AuthMethod> {
 async fn print_progress(stats: TransferStats) {
     let bar = ProgressBar::new(100);
     let mut interval = interval(Duration::from_secs(1));
+    let now = Instant::now();
 
     bar.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}% ({eta})")
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}% {msg}MB/s ({eta})")
             .unwrap()
             .progress_chars("=>-"),
     );
@@ -342,6 +343,8 @@ async fn print_progress(stats: TransferStats) {
         interval.tick().await;
         let progress =
             stats.confirmed_data.load(Relaxed) as f64 / stats.total_data.load(Relaxed) as f64;
+        let speed = stats.confirmed_data.load(Relaxed) as f64 / now.elapsed().as_secs_f64() / 1_000_000_f64;
+        bar.set_message(format!("{:.2}", speed));
         bar.set_position((progress * 100_f64) as u64);
     }
 }
