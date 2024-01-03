@@ -18,15 +18,13 @@ pub(crate) async fn reader<C: StreamCipherWrapper + ?Sized>(
     read: Arc<Semaphore>,
     mut index: u64,
     id: u32,
-    mut cipher: Option<Box<C>>,
+    mut cipher: Box<C>,
 ) -> Result<()> {
     let file = File::open(path).await?;
     let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
     reader.seek(SeekFrom::Start(index)).await?;
 
-    if let Some(ref mut cipher) = cipher {
-        cipher.seek(index);
-    }
+    cipher.seek(index);
 
     let mut buffer = [0; ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE];
     // write id to buffer it is constant for all chunks
@@ -48,9 +46,7 @@ pub(crate) async fn reader<C: StreamCipherWrapper + ?Sized>(
             break;
         }
 
-        if let Some(ref mut cipher) = cipher {
-            cipher.apply_keystream(&mut buffer[INDEX_SIZE + ID_SIZE..INDEX_SIZE + ID_SIZE + read]);
-        }
+        cipher.apply_keystream(&mut buffer[INDEX_SIZE + ID_SIZE..INDEX_SIZE + ID_SIZE + read]);
 
         // push job to queue
         queue

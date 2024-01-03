@@ -7,7 +7,6 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aes::cipher::crypto_common::rand_core::{OsRng, RngCore};
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use kanal::{AsyncReceiver, AsyncSender};
@@ -18,7 +17,6 @@ use tokio::select;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{interval, Instant};
 
-use crate::cipher::make_cipher;
 use crate::error::Error;
 use crate::items::{message, Confirmations, FileDetail, Manifest, Message, StartIndex};
 use crate::sender::reader::reader;
@@ -56,7 +54,9 @@ pub(crate) async fn main(
     }
 
     debug!("sending manifest");
-    str_stream.write_message(&manifest).await?;
+    str_stream
+        .write_message(&Message::manifest(&manifest))
+        .await?;
 
     let message: Message = str_stream.read_message().await?;
 
@@ -93,7 +93,7 @@ pub(crate) async fn main(
 
     info!("opened sockets");
 
-    // the reader fills the queue to 1_000 jobs, the unlimited capacity allows unconfirmed jobs to be added instantly
+    // the reader fills the queue to `options.sender_limit` jobs, the unlimited capacity allows unconfirmed jobs to be added instantly
     let (job_sender, job_receiver) = kanal::unbounded_async();
     // a cache for the file chunks that have been sent but not confirmed
     let cache: JobCache = Default::default();
@@ -101,7 +101,7 @@ pub(crate) async fn main(
     // a semaphore to control the send rate
     let send = Arc::new(Semaphore::new(0));
     // a semaphore to control the readers
-    let read = Arc::new(Semaphore::new(1_000));
+    let read = Arc::new(Semaphore::new(options.job_limit));
 
     // just confirmation messages
     let (confirmation_sender, confirmation_receiver) = kanal::unbounded_async();
@@ -119,21 +119,11 @@ pub(crate) async fn main(
         confirmation_receiver,
         cache.clone(),
         job_sender.clone(),
-        stats.confirmed_data.clone(),
+        stats.confirmed_packets.clone(),
         read.clone(),
     ));
 
     tokio::spawn(add_permits_at_rate(send.clone(), options.pps()));
-
-    let controller_handle = tokio::spawn(controller(
-        options,
-        str_stream,
-        manifest.files,
-        job_sender.clone(),
-        read,
-        stats.confirmed_data,
-        controller_receiver,
-    ));
 
     let handles: Vec<_> = sockets
         .into_iter()
@@ -144,9 +134,20 @@ pub(crate) async fn main(
                 socket,
                 cache.clone(),
                 send.clone(),
+                stats.sent_packets.clone(),
             ))
         })
         .collect();
+
+    let controller_handle = tokio::spawn(controller(
+        options,
+        str_stream,
+        manifest.files,
+        job_sender.clone(),
+        read,
+        stats,
+        controller_receiver,
+    ));
 
     let sender_future = async {
         for handle in handles {
@@ -171,6 +172,7 @@ async fn sender(
     socket: UdpSocket,
     cache: JobCache,
     send: Arc<Semaphore>,
+    sent: Arc<AtomicUsize>,
 ) -> Result<()> {
     let mut retries = 0;
 
@@ -180,7 +182,7 @@ async fn sender(
 
         // send the job data to the socket
         if let Err(error) = socket.send(&job.data).await {
-            error!("failed to send data: {}", error);
+            error!("send error: {}", error);
             job_sender.send(job).await?; // put the job back in the queue
             retries += 1;
         } else {
@@ -188,6 +190,7 @@ async fn sender(
             job.cached_at = Some(Instant::now());
             cache.write().await.insert((job.id, job.index), job);
             retries = 0;
+            sent.fetch_add(1, Relaxed);
         }
 
         permit.forget();
@@ -206,7 +209,7 @@ async fn controller(
     mut files: HashMap<u32, FileDetail>,
     job_sender: AsyncSender<Job>,
     read: Arc<Semaphore>,
-    confirmed_data: Arc<AtomicUsize>,
+    stats: TransferStats,
     controller_receiver: AsyncReceiver<Message>,
 ) -> Result<()> {
     let mut id = 0;
@@ -224,7 +227,7 @@ async fn controller(
                         &options.source.file_path,
                         &job_sender,
                         &read,
-                        &confirmed_data,
+                        &stats.total_data,
                     )
                     .await?;
 
@@ -253,7 +256,7 @@ async fn controller(
                         failure.id
                     );
 
-                    confirmed_data.fetch_sub(details.size as usize, Relaxed);
+                    stats.total_data.fetch_add(details.size as usize, Relaxed);
 
                     start_file_transfer(
                         &mut control_stream,
@@ -262,7 +265,7 @@ async fn controller(
                         &options.source.file_path,
                         &job_sender,
                         &read,
-                        &confirmed_data,
+                        &stats.total_data,
                     )
                     .await?;
                 } else {
@@ -306,14 +309,14 @@ async fn start_file_transfer(
     base_path: &Path,
     job_sender: &AsyncSender<Job>,
     read: &Arc<Semaphore>,
-    confirmed_data: &Arc<AtomicUsize>,
+    total_data: &Arc<AtomicUsize>,
 ) -> Result<()> {
     control_stream.write_message(&Message::start(id)).await?;
 
     let start_index: StartIndex = control_stream.read_message().await?;
-    confirmed_data.fetch_add(start_index.index as usize, Relaxed);
+    total_data.fetch_sub(start_index.index as usize, Relaxed);
 
-    let cipher = details.crypto.as_ref().map(make_cipher).transpose()?;
+    let cipher = details.crypto.as_ref().unwrap().make_cipher()?;
 
     tokio::spawn({
         let job_sender = job_sender.clone();
@@ -343,7 +346,7 @@ async fn receive_confirmations(
     confirmation_receiver: AsyncReceiver<Confirmations>,
     cache: JobCache,
     job_sender: AsyncSender<Job>,
-    confirmed_data: Arc<AtomicUsize>,
+    confirmed_packets: Arc<AtomicUsize>,
     read: Arc<Semaphore>,
 ) -> Result<()> {
     // this solves a problem where a confirmation is received after a job has already been requeued
@@ -353,7 +356,7 @@ async fn receive_confirmations(
     let requeue_handle = tokio::spawn({
         let cache = cache.clone();
         let lost_confirmations = lost_confirmations.clone();
-        let confirmed_data = confirmed_data.clone();
+        let confirmed_packets = confirmed_packets.clone();
         let read = read.clone();
 
         let mut interval = interval(Duration::from_millis(100));
@@ -384,7 +387,7 @@ async fn receive_confirmations(
                             lost_confirmations.remove(&key);
 
                             read.add_permits(1);
-                            confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed);
+                            confirmed_packets.fetch_add(1, Relaxed);
                         } else {
                             unconfirmed.cached_at = None;
                             job_sender.send(unconfirmed).await?;
@@ -408,7 +411,7 @@ async fn receive_confirmations(
                         lost_confirmations.insert((id, index));
                     } else {
                         read.add_permits(1); // add a permit to the reader
-                        confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed);
+                        confirmed_packets.fetch_add(1, Relaxed);
                     }
                 }
             }
@@ -453,9 +456,7 @@ async fn split_receiver(
             }
             Some(message::Message::End(_)) => controller_sender.send(message).await?,
             Some(message::Message::Failure(_)) => controller_sender.send(message).await?,
-            _ => {
-                error!("received {:?}", message);
-            }
+            _ => return Err(Error::unexpected_message(Box::new(message))),
         }
     }
 }
@@ -494,10 +495,7 @@ async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Res
             }
 
             let mut crypto = options.stream_crypto.clone();
-
-            if let Some(ref mut crypto) = crypto {
-                OsRng.fill_bytes(&mut crypto.iv);
-            }
+            crypto.random_iv();
 
             Ok::<(u32, FileDetail), Error>((
                 index as u32,
@@ -505,7 +503,7 @@ async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Res
                     path: format_dir(file.to_string_lossy()),
                     size,
                     signature,
-                    crypto,
+                    crypto: Some(crypto),
                 },
             ))
         })

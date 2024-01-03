@@ -1,10 +1,10 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::ops::Not;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use aes::cipher::crypto_common::rand_core::{OsRng, RngCore};
 use base64::engine::general_purpose::STANDARD_NO_PAD;
 use base64::Engine;
 use bytesize::ByteSize;
@@ -13,9 +13,11 @@ use log::LevelFilter;
 use regex::Regex;
 use tokio::io;
 
+use crate::cipher::random_bytes;
 use crate::items::{Cipher, Crypto};
 use crate::PACKET_SIZE;
 
+// TODO add a help item for firewall stuff
 const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
   cccp is a fast, secure, and reliable file transfer utility
 
@@ -23,48 +25,74 @@ const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
   - [user@][host:{port:}]file
   - If no user is set for a remote host, the current user is used
   - If no port is provided, port 22 is used
-  - Either the InSpec or OutSpec should be remote, not both or neither
+  - At least one IoSpec should be remote
 
 \x1B[1m\x1B[4mCiphers\x1B[0m
+  - NONE
   - CHACHA8
   - CHAHA20
   - AES128
+  - AES192
   - AES256";
 
-#[derive(Parser, Clone, Debug)]
+#[derive(Parser)]
 #[clap(version, about = HELP_HEADING)]
 pub(crate) struct Options {
     // the user does not need to set this
-    #[clap(long, hide = true, default_value = "local")]
+    #[clap(long, hide = true, default_value = "l")]
     pub(crate) mode: Mode,
 
-    /// The first port to use
+    // set by the controller automatically
+    #[clap(long, hide = true, default_value = "c")]
+    pub(crate) stream_setup_mode: SetupMode,
+
+    /// First port to use
     #[clap(short, long, default_value_t = 50000)]
     pub(crate) start_port: u16,
 
-    /// The last port to use
+    /// Last port to use
     #[clap(short, long, default_value_t = 50009)]
     pub(crate) end_port: u16,
 
-    /// The number of threads to use
+    /// Parallel data streams
     #[clap(short, long, default_value_t = 8)]
     pub(crate) threads: usize,
 
-    /// The log level [debug, info, warn, error]
+    /// Log level [debug, info, warn, error]
     #[clap(short, long, default_value = "warn")]
     pub(crate) log_level: LevelFilter,
 
-    /// The rate to send data at [b, kb, mb, gb, tb]
+    /// Data send rate [b, kb, mb, gb, tb]
     #[clap(short, long, default_value = "1mb")]
     rate: ByteSize,
 
-    /// The maximum number of concurrent transfers
+    /// Maximum concurrent transfers
     #[clap(short, long, default_value_t = 100)]
     pub(crate) max: usize,
 
     /// Encrypt the control stream
     #[clap(short, long, default_value = "AES256")]
     pub(crate) control_crypto: Crypto,
+
+    /// Encrypt the data stream
+    #[clap(short = 'S', long, default_value = "NONE")]
+    pub(crate) stream_crypto: Crypto,
+
+    /// Receive timeout in MS
+    #[clap(short = 'T', long, default_value_t = 5_000)]
+    pub(crate) receive_timeout: u64,
+
+    /// Limit for concurrent jobs
+    #[clap(short, long, default_value_t = 1_000)]
+    pub(crate) job_limit: usize,
+
+    /// Command to execute cccp
+    #[clap(short = 'E', long, default_value = "cccp")]
+    command: String,
+
+    /// How often to print progress in MS
+    #[clap(short, long, default_value_t = 1_000)]
+    pub(crate) progress_interval: u64,
 
     /// Verify integrity of transfers using blake3
     #[clap(short, long)]
@@ -74,83 +102,87 @@ pub(crate) struct Options {
     #[clap(short, long)]
     pub(crate) overwrite: bool,
 
-    /// Include subdirectories and files recursively
+    /// Include subdirectories recursively
     #[clap(short = 'R', long)]
     pub(crate) recursive: bool,
 
-    /// Force the transfer even if the there is not enough space
+    /// Do not check destination's available storage
     #[clap(short, long)]
     pub(crate) force: bool,
 
-    /// Optionally encrypt the data stream
-    #[clap(short = 'S', long)]
-    pub(crate) stream_crypto: Option<Crypto>,
-
-    /// Manually specify the bind address
+    /// Forces the destination to be a directory
     #[clap(short, long)]
-    pub(crate) bind_address: Option<IpAddr>,
+    pub(crate) directory: bool,
 
-    /// Log to a file (default: stderr)
+    /// Log to a file (default: stderr / local only)
     #[clap(short = 'L', long)]
     pub(crate) log_file: Option<PathBuf>,
 
-    /// The source IoSpec (InSpec)
+    /// Source IoSpec (InSpec)
     #[clap()]
     pub(crate) source: IoSpec,
 
-    /// The destination IoSpec (OutSpec)
+    /// Destination IoSpec (OutSpec)
     #[clap()]
     pub(crate) destination: IoSpec,
 }
 
 impl Options {
-    pub(crate) fn format_command(&self, sender: bool) -> String {
+    /// Returns the command to run on the remote host
+    pub(crate) fn format_command(&self, sender: bool, mode: SetupMode) -> String {
         let mut arguments = vec![
-            String::from("cccp"),
+            self.command.clone(),
             format!("--mode {}", if sender { "rr" } else { "rs" }),
+            format!("--stream-setup-mode {}", mode),
             format!("-s {}", self.start_port),
             format!("-e {}", self.end_port),
             format!("-t {}", self.threads),
             format!("-l {}", self.log_level),
             format!("-r \"{}\"", self.rate),
-            format!("--control-crypto {}", self.control_crypto),
+            format!("-m {}", self.max),
+            format!("-T {}", self.receive_timeout),
+            format!("-j {}", self.job_limit),
+            format!("-c {}", self.control_crypto),
+            format!("-S {}", self.stream_crypto),
+            format!("\"{}\"", self.source),
+            format!("\"{}\"", self.destination),
         ];
 
-        if let Some(ref crypto) = self.stream_crypto {
-            arguments.push(format!(" --stream-crypto {}", crypto))
-        }
-
+        // optional arguments are inserted at index 1 so they are always before the IoSpecs
         if self.overwrite {
-            arguments.push(String::from("-o"))
+            arguments.insert(1, String::from("-o"))
         }
 
         if self.verify {
-            arguments.push(String::from("-v"))
+            arguments.insert(1, String::from("-v"))
         }
 
         if self.recursive {
-            arguments.push(String::from("-R"))
+            arguments.insert(1, String::from("-R"))
         }
 
         if self.force {
-            arguments.push(String::from("-f"))
+            arguments.insert(1, String::from("-f"))
         }
 
-        arguments.push(format!("\"{}\"", self.source));
-        arguments.push(format!("\"{}\"", self.destination));
+        if self.directory {
+            arguments.insert(1, String::from("-d"))
+        }
 
         arguments.join(" ")
     }
 
+    /// Calculates the send rate in packets per second
     pub(crate) fn pps(&self) -> u64 {
         self.rate.0 / PACKET_SIZE as u64
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum Mode {
     Local,
     Remote(bool), // Remote(sender)
+    Controller,   // two remotes
 }
 
 impl FromStr for Mode {
@@ -161,11 +193,51 @@ impl FromStr for Mode {
             "l" => Self::Local,
             "rr" => Self::Remote(false),
             "rs" => Self::Remote(true),
-            "local" => Self::Local,
-            "remote-receiver" => Self::Remote(false),
-            "remote-sender" => Self::Remote(true),
+            "c" => Self::Controller,
             _ => return Err(Self::Err::unknown_mode()),
         })
+    }
+}
+
+#[derive(Copy, Clone)]
+pub(crate) enum SetupMode {
+    Listen,
+    Connect,
+}
+
+impl FromStr for SetupMode {
+    type Err = OptionParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "l" => Self::Listen,
+            "c" => Self::Connect,
+            _ => return Err(Self::Err::unknown_mode()),
+        })
+    }
+}
+
+impl Display for SetupMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Listen => "l",
+                Self::Connect => "c",
+            }
+        )
+    }
+}
+
+impl Not for SetupMode {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        match self {
+            Self::Listen => Self::Connect,
+            Self::Connect => Self::Listen,
+        }
     }
 }
 
@@ -222,11 +294,11 @@ impl Display for Crypto {
 }
 
 /// a file located anywhere
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct IoSpec {
     pub(crate) file_path: PathBuf,
     pub(crate) host: Option<SocketAddr>,
-    pub(crate) username: Option<String>,
+    pub(crate) username: String,
 }
 
 impl FromStr for IoSpec {
@@ -236,9 +308,13 @@ impl FromStr for IoSpec {
         let captures = Regex::new("(?:(?:([\\w-]+)@)?([\\w.-]+)(?::(\\d+))?:)?([ \\w/.-]+)")
             .unwrap() // infallible
             .captures(s)
-            .ok_or(Self::Err::malformed_io_spec("Invalid IO spec"))?;
+            .ok_or(Self::Err::invalid_io_spec())?;
 
-        let username = captures.get(1).map(|m| m.as_str().to_string());
+        let username = captures
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or(whoami::username());
+
         let port = captures
             .get(3)
             .map(|m| m.as_str().parse::<u16>())
@@ -255,9 +331,9 @@ impl FromStr for IoSpec {
                     Ok(ip) => Ok(SocketAddr::new(ip, port)),
                     Err(_) => {
                         // if the host is not an ip address, try to resolve  it as a domain
-                        format!("{}:{}", host, port)
+                        (host, port)
                             .to_socket_addrs()?
-                            .next()
+                            .next() // use the first address
                             .ok_or(Self::Err::no_such_host())
                     }
                 }
@@ -283,18 +359,19 @@ impl Display for IoSpec {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let file_path = self.file_path.display();
 
-        match (&self.username, &self.host) {
-            (None, None) => write!(f, "{}", file_path),
-            (None, Some(host)) => write!(f, "{}:{}", host, file_path),
-            (Some(username), Some(host)) => write!(f, "{}@{}:{}", username, host, file_path),
-            _ => Err(std::fmt::Error),
+        match self.host {
+            None => write!(f, "{}@localhost:{}", self.username, file_path),
+            Some(host) => write!(f, "{}@{}:{}", self.username, host, file_path),
         }
     }
 }
 
 impl IoSpec {
     pub(crate) fn is_local(&self) -> bool {
-        self.host.is_none() || (self.host.is_some() && self.file_path.exists())
+        match self.host {
+            None => true,
+            Some(host) => host.ip().is_loopback(),
+        }
     }
 }
 
@@ -307,7 +384,7 @@ pub struct OptionParseError {
 enum ErrorKind {
     Io(io::Error),
     Decode(base64::DecodeError),
-    MalformedIoSpec(&'static str),
+    InvalidIoSpec,
     UnknownMode,
     InvalidCipher,
     InvalidKey,
@@ -325,13 +402,13 @@ impl Display for OptionParseError {
             match &self.kind {
                 ErrorKind::Io(error) => error.description(),
                 ErrorKind::Decode(error) => error.description(),
-                ErrorKind::MalformedIoSpec(message) => message,
-                ErrorKind::UnknownMode => "The mode can be either sender or receiver",
-                ErrorKind::InvalidCipher => "Invalid cipher",
-                ErrorKind::InvalidKey => "Invalid key",
-                ErrorKind::InvalidIv => "Invalid IV",
-                ErrorKind::NoSuchHost => "No such host",
-                ErrorKind::InvalidPort => "Invalid port",
+                ErrorKind::InvalidIoSpec => "invalid IoSpec, refer to --help for more information",
+                ErrorKind::UnknownMode => "the mode can be either sender or receiver",
+                ErrorKind::InvalidCipher => "invalid cipher",
+                ErrorKind::InvalidKey => "invalid key",
+                ErrorKind::InvalidIv => "invalid IV",
+                ErrorKind::NoSuchHost => "no such host",
+                ErrorKind::InvalidPort => "invalid port",
             }
         )
     }
@@ -374,9 +451,9 @@ impl OptionParseError {
         }
     }
 
-    fn malformed_io_spec(message: &'static str) -> Self {
+    fn invalid_io_spec() -> Self {
         Self {
-            kind: ErrorKind::MalformedIoSpec(message),
+            kind: ErrorKind::InvalidIoSpec,
         }
     }
 
@@ -397,10 +474,4 @@ impl OptionParseError {
             kind: ErrorKind::InvalidPort,
         }
     }
-}
-
-fn random_bytes(len: usize) -> Vec<u8> {
-    let mut bytes = vec![0; len];
-    OsRng.fill_bytes(&mut bytes);
-    bytes
 }

@@ -26,7 +26,9 @@ pub(crate) enum ErrorKind {
     #[cfg(unix)]
     Nix(nix::Error),
     StripPrefix(std::path::StripPrefixError),
-    Ssh(async_ssh2_tokio::Error),
+    AsyncSsh(async_ssh2_tokio::Error),
+    RuSsh(russh::Error),
+    Base64Decode(base64::DecodeError),
     MissingQueue,
     MaxRetries,
     #[cfg(windows)]
@@ -130,7 +132,23 @@ impl From<std::path::StripPrefixError> for Error {
 impl From<async_ssh2_tokio::Error> for Error {
     fn from(error: async_ssh2_tokio::Error) -> Self {
         Self {
-            kind: ErrorKind::Ssh(error),
+            kind: ErrorKind::AsyncSsh(error),
+        }
+    }
+}
+
+impl From<russh::Error> for Error {
+    fn from(error: russh::Error) -> Self {
+        Self {
+            kind: ErrorKind::RuSsh(error),
+        }
+    }
+}
+
+impl From<base64::DecodeError> for Error {
+    fn from(error: base64::DecodeError) -> Self {
+        Self {
+            kind: ErrorKind::Base64Decode(error),
         }
     }
 }
@@ -151,7 +169,9 @@ impl std::fmt::Display for Error {
             #[cfg(unix)]
             ErrorKind::Nix(ref error) => write!(f, "Nix error: {}", error),
             ErrorKind::StripPrefix(ref error) => write!(f, "StripPrefix error: {}", error),
-            ErrorKind::Ssh(ref error) => write!(f, "SSH error: {}", error),
+            ErrorKind::AsyncSsh(ref error) => write!(f, "SSH error: {}", error),
+            ErrorKind::RuSsh(ref error) => write!(f, "SSH error: {}", error),
+            ErrorKind::Base64Decode(ref error) => write!(f, "Base64 decode error: {}", error),
             ErrorKind::MissingQueue => write!(f, "Missing queue"),
             ErrorKind::MaxRetries => write!(f, "Max retries"),
             #[cfg(windows)]

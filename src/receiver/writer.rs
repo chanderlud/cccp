@@ -9,7 +9,7 @@ use tokio::fs::{remove_file, rename, OpenOptions};
 use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
-use crate::cipher::{make_cipher, StreamCipherWrapper};
+use crate::cipher::StreamCipherWrapper;
 use crate::error::Error;
 use crate::items::{Crypto, Message};
 use crate::receiver::{Job, WriterQueue};
@@ -59,7 +59,7 @@ pub(crate) struct FileDetails {
     pub(crate) size: u64,
     pub(crate) start_index: u64,
     pub(crate) signature: Option<Vec<u8>>,
-    pub(crate) crypto: Option<Crypto>,
+    pub(crate) crypto: Crypto,
 }
 
 impl FileDetails {
@@ -86,11 +86,8 @@ pub(crate) async fn writer(
     let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, file);
     writer.seek(SeekFrom::Start(position)).await?; // seek to the initial position
 
-    let mut cipher = details.crypto.as_ref().map(make_cipher).transpose()?;
-
-    if let Some(ref mut cipher) = cipher {
-        cipher.seek(position);
-    }
+    let mut cipher = details.crypto.make_cipher()?;
+    cipher.seek(position);
 
     debug!(
         "writer for {} starting at {}",
@@ -177,14 +174,12 @@ async fn write_data<T: AsyncWrite + Unpin, C: StreamCipherWrapper + ?Sized>(
     mut buffer: [u8; TRANSFER_BUFFER_SIZE],
     position: &mut u64,
     file_size: u64,
-    cipher: &mut Option<Box<C>>,
+    cipher: &mut Box<C>,
 ) -> io::Result<()> {
     // calculate the length of the data to write
     let len = (file_size - *position).min(TRANSFER_BUFFER_SIZE as u64);
 
-    if let Some(ref mut cipher) = cipher {
-        cipher.apply_keystream(&mut buffer[..len as usize]);
-    }
+    cipher.apply_keystream(&mut buffer[..len as usize]); // apply the keystream
 
     *position += len; // advance the position
     writer.write_all(&buffer[..len as usize]).await // write the data

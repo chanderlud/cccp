@@ -20,11 +20,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout};
 
 use crate::error::Error;
-use crate::items::{message, ConfirmationIndexes, Manifest, Message, StartIndex};
+use crate::items::{message, ConfirmationIndexes, Message, StartIndex};
 use crate::receiver::writer::{writer, FileDetails, SplitQueue};
 use crate::{
     socket_factory, CipherStream, Options, Result, TransferStats, ID_SIZE, INDEX_SIZE, MAX_RETRIES,
-    RECEIVE_TIMEOUT, TRANSFER_BUFFER_SIZE,
+    TRANSFER_BUFFER_SIZE,
 };
 
 mod writer;
@@ -46,14 +46,27 @@ pub(crate) async fn main(
 ) -> Result<()> {
     info!("receiving {} -> {}", options.source, options.destination);
 
-    let manifest: Manifest = str_stream.read_message().await?;
-    let is_dir = manifest.files.len() > 1; // if multiple files are being received, the destination should be a directory
-    debug!(
-        "received manifest | files={} dirs={}",
-        manifest.files.len(),
-        manifest.directories.len()
-    );
+    let message: Message = str_stream.read_message().await?;
 
+    let manifest = match message.message {
+        Some(message::Message::Manifest(manifest)) => {
+            debug!(
+                "received manifest | files={} dirs={}",
+                manifest.files.len(),
+                manifest.directories.len()
+            );
+
+            manifest
+        }
+        Some(message::Message::Done(done)) if done.reason == 0 => {
+            warn!("remote client found no files to send");
+            return Ok(());
+        }
+        _ => return Err(Error::unexpected_message(Box::new(message))),
+    };
+
+    // if multiple files are being received, the destination should be a directory
+    let is_dir = options.directory || manifest.files.len() > 1;
     let mut completed = Vec::new();
 
     let filtered_files = manifest.files.into_iter().filter_map(|(id, details)| {
@@ -105,7 +118,7 @@ pub(crate) async fn main(
                         size: details.size,
                         start_index,
                         signature: details.signature,
-                        crypto: details.crypto,
+                        crypto: details.crypto.unwrap_or_default(),
                     },
                 ))
             }
@@ -183,7 +196,7 @@ pub(crate) async fn main(
     let confirmation_handle = tokio::spawn(send_confirmations(
         message_sender.clone(),
         confirmation_receiver,
-        stats.confirmed_data,
+        stats.confirmed_packets.clone(),
     ));
 
     let controller_handle = tokio::spawn(controller(
@@ -194,9 +207,11 @@ pub(crate) async fn main(
         message_sender,
     ));
 
+    let receive_timeout = Duration::from_millis(options.receive_timeout);
+
     let handles: Vec<_> = sockets
         .into_iter()
-        .map(|socket| tokio::spawn(receiver(writer_queue.clone(), socket)))
+        .map(|socket| tokio::spawn(receiver(writer_queue.clone(), socket, receive_timeout)))
         .collect();
 
     let receiver_future = async {
@@ -211,16 +226,16 @@ pub(crate) async fn main(
         result = confirmation_handle => { debug!("confirmation sender exited: {:?}", result); result? },
         result = controller_handle => { debug!("controller exited: {:?}", result); result? },
         result = receiver_future => { debug!("receivers exited: {:?}", result); result },
-        result = message_sender_handle => { debug!("message sender exited: {:?}", result); result? }
+        result = message_sender_handle => { debug!("message sender exited: {:?}", result); result? },
     }
 }
 
-async fn receiver(queue: WriterQueue, socket: UdpSocket) -> Result<()> {
+async fn receiver(queue: WriterQueue, socket: UdpSocket, receive_timeout: Duration) -> Result<()> {
     let mut buf = [0; ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE]; // buffer for receiving data
     let mut retries = 0; // counter to keep track of retries
 
     while retries < MAX_RETRIES {
-        match timeout(RECEIVE_TIMEOUT, socket.recv(&mut buf)).await {
+        match timeout(receive_timeout, socket.recv(&mut buf)).await {
             Ok(Ok(read)) if read > 0 => {
                 retries = 0; // reset retries
 
@@ -235,7 +250,14 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket) -> Result<()> {
                 }
             }
             Ok(Ok(_)) => warn!("0 byte read?"), // this should never happen
-            Ok(Err(_)) | Err(_) => retries += 1, // catch errors and timeouts
+            Ok(Err(error)) => {
+                retries += 1;
+                error!("recv error: {:?}", error);
+            }
+            Err(timeout) => {
+                retries += 1;
+                error!("recv timeout: {:?}", timeout);
+            }
         }
     }
 
@@ -302,7 +324,7 @@ async fn controller(
             }
             Some(message::Message::Done(message)) => {
                 match message.reason {
-                    0 => warn!("remote client found no files to send"),
+                    // 0 => warn!("remote client found no files to send"),
                     1 => debug!("all transfers were completed before execution"),
                     2 => debug!("remote client completed all transfers"),
                     _ => break Err(Error::unexpected_message(Box::new(message))),
@@ -319,7 +341,7 @@ async fn controller(
 async fn send_confirmations(
     sender: AsyncSender<Message>,
     confirmation_receiver: AsyncReceiver<(u32, u64)>,
-    confirmed_data: Arc<AtomicUsize>,
+    confirmed_packets: Arc<AtomicUsize>,
 ) -> Result<()> {
     let data: Arc<Mutex<Vec<(u32, u64)>>> = Default::default();
 
@@ -358,7 +380,7 @@ async fn send_confirmations(
 
     let future = async {
         while let Ok(confirmation) = confirmation_receiver.recv().await {
-            confirmed_data.fetch_add(TRANSFER_BUFFER_SIZE, Relaxed); // increment the confirmed data counter
+            confirmed_packets.fetch_add(1, Relaxed); // increment the confirmed counter
             data.lock().await.push(confirmation); // push the index to the data vector
         }
     };
@@ -382,6 +404,7 @@ async fn send_messages<M: prost::Message>(
     Ok(())
 }
 
+/// returns the amount of free space in bytes for the given path
 #[cfg(unix)]
 fn free_space(path: &Path) -> Result<u64> {
     use nix::sys::statvfs::statvfs;
@@ -393,6 +416,7 @@ fn free_space(path: &Path) -> Result<u64> {
     Ok(stat.blocks_available() as u64 * stat.fragment_size())
 }
 
+/// returns the amount of free space in bytes for the given path
 #[cfg(windows)]
 fn free_space(path: &Path) -> Result<u64> {
     use widestring::U16CString;
@@ -436,6 +460,7 @@ fn format_path(path: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// returns the start index of the file, if it exists
 async fn start_index(path: &Path) -> Result<u64> {
     if path.exists() {
         let metadata = metadata(&path).await?;

@@ -1,30 +1,40 @@
 #![feature(int_roundings)]
 
 use std::net::{IpAddr, SocketAddr};
+use std::ops::Not;
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
+use base64::engine::general_purpose::STANDARD_NO_PAD;
+use base64::prelude::BASE64_STANDARD_NO_PAD;
+use base64::Engine;
 use blake3::{Hash, Hasher};
 use clap::{CommandFactory, Parser};
 use futures::stream::iter;
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info, warn};
+use prost::Message;
 use rpassword::prompt_password;
+use russh::{ChannelMsg, Sig};
 use simple_logging::{log_to_file, log_to_stderr};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
-use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
-use tokio::time::{Instant, interval, sleep};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::sync::Notify;
+use tokio::time::{interval, sleep, Instant, Interval};
 use tokio::{io, select};
+use tokio::signal::ctrl_c;
 
 use crate::cipher::CipherStream;
+use crate::error::Error;
+use crate::items::Stats;
 
-use crate::options::{Mode, Options};
+use crate::options::{Mode, Options, SetupMode};
 
 mod cipher;
 mod error;
@@ -34,7 +44,7 @@ mod receiver;
 mod sender;
 
 // result alias used throughout
-type Result<T> = std::result::Result<T, error::Error>;
+type Result<T> = std::result::Result<T, Error>;
 
 // read buffer must be a multiple of the transfer buffer to prevent a nasty little bug
 const READ_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
@@ -43,23 +53,79 @@ const TRANSFER_BUFFER_SIZE: usize = 1024;
 const INDEX_SIZE: usize = std::mem::size_of::<u64>();
 const ID_SIZE: usize = std::mem::size_of::<u32>();
 const MAX_RETRIES: usize = 10;
-const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 // UDP header + ID + INDEX + DATA
 const PACKET_SIZE: usize = 8 + ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE;
 
 // how long to wait for a job to be confirmed before requeuing it
 const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct TransferStats {
-    confirmed_data: Arc<AtomicUsize>,
+    confirmed_packets: Arc<AtomicUsize>,
+    sent_packets: Arc<AtomicUsize>,
     total_data: Arc<AtomicUsize>,
+    start_time: Instant,
+    complete: Arc<AtomicBool>,
+}
+
+impl Default for TransferStats {
+    fn default() -> Self {
+        Self {
+            confirmed_packets: Default::default(),
+            sent_packets: Default::default(),
+            total_data: Default::default(),
+            start_time: Instant::now(),
+            complete: Default::default(),
+        }
+    }
+}
+
+impl TransferStats {
+    fn confirmed(&self) -> usize {
+        self.confirmed_packets.load(Relaxed) * TRANSFER_BUFFER_SIZE
+    }
+
+    fn packet_loss(&self) -> f64 {
+        let sent = self.sent_packets.load(Relaxed);
+        let confirmed = self.confirmed_packets.load(Relaxed);
+
+        if sent == 0 || sent < confirmed {
+            return 0_f64;
+        }
+
+        let lost = sent - confirmed;
+        lost as f64 / sent as f64
+    }
+
+    fn total(&self) -> usize {
+        self.total_data.load(Relaxed)
+    }
+
+    fn is_complete(&self) -> bool {
+        self.complete.load(Relaxed)
+    }
+
+    fn speed(&self) -> f64 {
+        self.confirmed() as f64 / self.start_time.elapsed().as_secs_f64() / 1_000_000_f64
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut options = Options::parse();
     let mut command = Options::command();
+
+    let cancel_signal = Arc::new(Notify::new());
+
+    tokio::spawn({
+        let cancel_signal = cancel_signal.clone();
+
+        async move {
+            ctrl_c().await.expect("failed to listen for ctrl-c");
+            debug!("ctrl-c received");
+            cancel_signal.notify_waiters();
+        }
+    });
 
     match options.mode {
         Mode::Local => {
@@ -114,164 +180,200 @@ async fn main() -> Result<()> {
             options.end_port = new_end;
         }
 
-        if options.destination.is_local() && options.source.is_local() {
+        let source_local = options.source.is_local();
+        let destination_local = options.destination.is_local();
+
+        if source_local && destination_local {
             command
                 .error(
                     clap::error::ErrorKind::ValueValidation,
                     "both the source and destination cannot be local",
                 )
                 .exit();
+        } else if !source_local && !destination_local {
+            debug!("switching ton controller mode");
+            options.mode = Mode::Controller;
         }
     }
 
-    let sender = options.source.is_local();
     let stats = TransferStats::default();
 
-    let result = match options.mode {
+    match options.mode {
         Mode::Local => {
-            let (local, remote) = if sender {
-                (&options.source, &mut options.destination)
-            } else {
-                (&options.destination, &mut options.source)
-            };
+            let sender = options.source.is_local();
 
-            if remote.host.is_none() {
-                command
-                    .error(
-                        clap::error::ErrorKind::ValueValidation,
-                        format!("host must be specified for remote IoSpec: {}", remote),
-                    )
-                    .exit();
-            } else if remote.username.is_none() {
-                remote.username = Some(whoami::username());
-            }
+            let (local, remote) = if sender {
+                (&options.source, &options.destination)
+            } else {
+                (&options.destination, &options.source)
+            };
 
             debug!("local {}", local);
             debug!("remote {}", remote);
 
-            let mut auth_method = if let Ok(auth) = ssh_key_auth().await {
-                auth
-            } else {
-                password_auth()?
-            };
-
-            // unwrap is safe because we check for a host above
+            // unwrap is safe because host must be specified for remote IoSpec
             let remote_addr = remote.host.unwrap();
             let remote_ip = remote_addr.ip();
 
-            let client = loop {
-                match Client::connect(
-                    remote_addr,
-                    remote.username.as_ref().unwrap().as_str(), // unwrap is safe because we check for a username above
-                    auth_method.clone(),
-                    ServerCheckMethod::NoCheck,
-                )
-                .await
-                {
-                    Ok(client) => break client,
-                    Err(error) => {
-                        warn!("failed to connect to remote host: {}", error);
-
-                        match error {
-                            async_ssh2_tokio::error::Error::KeyAuthFailed => {
-                                info!("trying password auth");
-                                auth_method = password_auth().unwrap();
-                            }
-                            _ => return Err(error.into()),
-                        }
-                    }
-                }
-            };
+            let client = connect_client(remote_addr, &remote.username).await?;
 
             info!("connected to the remote host via ssh");
 
-            let command_str = options.format_command(sender);
-
-            let command_handle = tokio::spawn(async move {
-                info!("executing command on remote host");
-                debug!("command: {}", command_str);
-
-                client.execute(&command_str).await
-            });
+            let command_handle = tokio::spawn(command_runner(
+                client,
+                options.format_command(sender, !options.stream_setup_mode),
+                sender.not().then_some(stats.sent_packets.clone()),
+                None,
+                None,
+                cancel_signal.clone(),
+            ));
 
             // receiver -> sender stream
-            let stream =
-                connect_stream(remote_ip, options.start_port, options.bind_address).await?;
-            let rts_stream = CipherStream::new(stream, &options.control_crypto)?;
-
+            let rts_stream = connect_stream(remote_ip, options.start_port, &mut options).await?;
             // sender -> receiver stream
-            let stream =
-                connect_stream(remote_ip, options.start_port + 1, options.bind_address).await?;
-            let str_stream = CipherStream::new(stream, &options.control_crypto)?;
+            let str_stream =
+                connect_stream(remote_ip, options.start_port + 1, &mut options).await?;
 
-            let display_handle = tokio::spawn({
+            let stats_handle = tokio::spawn({
                 let stats = stats.clone();
+                let interval = interval(Duration::from_millis(options.progress_interval));
 
-                print_progress(stats)
+                local_stats_printer(stats, interval)
             });
 
-            let main_future = async {
-                if sender {
-                    sender::main(options, stats, rts_stream, str_stream, remote_ip).await
-                } else {
-                    receiver::main(options, stats, rts_stream, str_stream, remote_ip).await
-                }
-            };
+            let main_future = run_main(
+                sender,
+                options,
+                stats.clone(),
+                rts_stream,
+                str_stream,
+                remote_ip,
+            );
 
             let command_future = async {
-                let result = command_handle.await;
-
-                match result {
-                    Ok(Ok(result)) => {
-                        if result.exit_status != 0 {
-                            // return to terminate execution
-                            error!("remote command failed: {:?}", result);
-                        } else {
-                            info!("remote client exited successfully");
-                            // wait forever to allow the other futures to complete
-                            sleep(Duration::from_secs(u64::MAX)).await;
-                        }
+                match command_handle.await?? {
+                    Some(status) if status != 0 => {
+                        error!("remote command failed with status {}", status)
                     }
-                    Ok(Err(error)) => error!("remote client failed: {}", error), // return to terminate execution
-                    Err(error) => error!("failed to join remote command: {}", error), // return to terminate execution
+                    None => error!("remote command failed to exit"),
+                    _ => sleep(Duration::from_secs(u64::MAX)).await, // wait forever to allow the other futures to complete
                 }
+
+                Ok::<(), Error>(())
             };
 
             select! {
-                _ = command_future => Ok(()),
-                _ = display_handle => Ok(()),
-                result = main_future => result
+                result = command_future => result?,
+                result = main_future => result?
             }
+
+            stats.complete.store(true, Relaxed);
+            stats_handle.await?;
         }
         Mode::Remote(sender) => {
-            // receiver -> sender stream
-            let listener = TcpListener::bind(("0.0.0.0", options.start_port)).await?;
-            let (stream, remote_addr) = listener.accept().await?;
+            let (rts_stream, str_stream, remote_addr) = match options.stream_setup_mode {
+                SetupMode::Listen => {
+                    let (rts_stream, remote_addr) =
+                        listen_stream(options.start_port, &mut options).await?;
+                    let (str_stream, _) =
+                        listen_stream(options.start_port + 1, &mut options).await?;
 
-            let rts_stream = CipherStream::new(stream, &options.control_crypto)?;
+                    (rts_stream, str_stream, remote_addr)
+                }
+                SetupMode::Connect => {
+                    // unwrap is safe because host must be specified for remote IoSpec
+                    let addr = options.destination.host.unwrap().ip();
 
-            // sender -> receiver stream
-            let listener = TcpListener::bind(("0.0.0.0", options.start_port + 1)).await?;
-            let (stream, _) = listener.accept().await?;
+                    let rts_stream = connect_stream(addr, options.start_port, &mut options).await?;
+                    let str_stream =
+                        connect_stream(addr, options.start_port + 1, &mut options).await?;
 
-            let str_stream = CipherStream::new(stream, &options.control_crypto)?;
+                    (rts_stream, str_stream, addr)
+                }
+            };
 
-            let remote_addr = remote_addr.ip();
+            let stats_handle = tokio::spawn(remote_stats_printer(stats.clone()));
 
-            if sender {
-                sender::main(options, stats, rts_stream, str_stream, remote_addr).await
-            } else {
-                receiver::main(options, stats, rts_stream, str_stream, remote_addr).await
-            }
+            run_main(
+                sender,
+                options,
+                stats.clone(),
+                rts_stream,
+                str_stream,
+                remote_addr,
+            )
+            .await?;
+
+            stats.complete.store(true, Relaxed);
+            stats_handle.await?;
         }
-    };
+        Mode::Controller => {
+            // unwraps are safe because host must be specified for remote IoSpec
+            let sender_addr = options.source.host.unwrap();
+            let receiver_addr = options.destination.host.unwrap();
 
-    if let Err(error) = &result {
-        error!("{:?}", error);
+            let sender_client = connect_client(sender_addr, &options.source.username).await?;
+            let receiver_client =
+                connect_client(receiver_addr, &options.destination.username).await?;
+
+            let sender_handle = tokio::spawn(command_runner(
+                sender_client,
+                options.format_command(false, SetupMode::Connect), // sender is inverted somewhat confusingly
+                Some(stats.sent_packets.clone()),
+                Some(stats.confirmed_packets.clone()),
+                Some(stats.total_data.clone()),
+                cancel_signal.clone(),
+            ));
+
+            let receiver_handle = tokio::spawn(command_runner(
+                receiver_client,
+                options.format_command(true, SetupMode::Listen),
+                None,
+                None,
+                None,
+                cancel_signal.clone(),
+            ));
+
+            let stats_handle = tokio::spawn({
+                let stats = stats.clone();
+                let interval = interval(Duration::from_millis(options.progress_interval));
+
+                local_stats_printer(stats, interval)
+            });
+
+            let sender_status = sender_handle.await??;
+            let receiver_status = receiver_handle.await??;
+
+            if sender_status != Some(0) {
+                error!("sender command failed with status {:?}", sender_status);
+            } else if receiver_status != Some(0) {
+                error!("receiver command failed with status {:?}", receiver_status);
+            }
+
+            stats.complete.store(true, Relaxed);
+            stats_handle.await?;
+        }
     }
 
     info!("exiting");
-    result
+    Ok(())
+}
+
+/// selects the main function to run based on the mode
+#[inline]
+async fn run_main(
+    sender: bool,
+    options: Options,
+    stats: TransferStats,
+    rts_stream: CipherStream<TcpStream>,
+    str_stream: CipherStream<TcpStream>,
+    remote_addr: IpAddr,
+) -> Result<()> {
+    if sender {
+        sender::main(options, stats, rts_stream, str_stream, remote_addr).await
+    } else {
+        receiver::main(options, stats, rts_stream, str_stream, remote_addr).await
+    }
 }
 
 /// opens the sockets that will be used to send data
@@ -281,22 +383,56 @@ async fn socket_factory(
     remote_addr: IpAddr,
     threads: usize,
 ) -> io::Result<Vec<UdpSocket>> {
-    let bind_addr: IpAddr = "0.0.0.0".parse().unwrap();
-
     iter(start..=end)
-        .map(|port| {
-            let local_addr = SocketAddr::new(bind_addr, port);
-            let remote_addr = SocketAddr::new(remote_addr, port);
-
-            async move {
-                let socket = UdpSocket::bind(local_addr).await?;
-                socket.connect(remote_addr).await?;
-                Ok::<UdpSocket, io::Error>(socket)
-            }
+        .map(|port| async move {
+            let socket = UdpSocket::bind(("0.0.0.0", port)).await?;
+            socket.connect((remote_addr, port)).await?;
+            Ok::<UdpSocket, io::Error>(socket)
         })
         .buffer_unordered(threads)
         .try_collect()
         .await
+}
+
+/// connects to a remote client via ssh
+async fn connect_client(remote_addr: SocketAddr, username: &str) -> Result<Client> {
+    let mut auth_method = get_auth(&remote_addr).await?;
+
+    loop {
+        match Client::connect(
+            remote_addr,
+            username,
+            auth_method,
+            ServerCheckMethod::NoCheck,
+        )
+        .await
+        {
+            Ok(client) => break Ok(client),
+            Err(error) => match error {
+                async_ssh2_tokio::error::Error::KeyAuthFailed => {
+                    warn!("ssh key auth failed");
+                    auth_method = password_auth(&remote_addr)?;
+                }
+                async_ssh2_tokio::error::Error::PasswordWrong => {
+                    error!("invalid password");
+                    auth_method = password_auth(&remote_addr)?;
+                }
+                _ => return Err(error.into()),
+            },
+        }
+    }
+}
+
+/// select an auth method
+async fn get_auth(host: &SocketAddr) -> io::Result<AuthMethod> {
+    let mut auth = ssh_key_auth().await;
+
+    if auth.is_err() {
+        warn!("unable to load ssh key");
+        auth = password_auth(host);
+    }
+
+    auth
 }
 
 /// try to get an ssh key for authentication
@@ -321,61 +457,152 @@ async fn ssh_key_auth() -> io::Result<AuthMethod> {
 }
 
 /// prompt the user for a password
-fn password_auth() -> io::Result<AuthMethod> {
-    let password = prompt_password("password: ")?;
+fn password_auth(host: &SocketAddr) -> io::Result<AuthMethod> {
+    let password = prompt_password(format!("{} password: ", host))?;
     Ok(AuthMethod::with_password(&password))
 }
 
-/// print a progress bar to stdout
-async fn print_progress(stats: TransferStats) {
+/// print a progress bar & stats to stdout
+async fn local_stats_printer(stats: TransferStats, mut interval: Interval) {
     let bar = ProgressBar::new(100);
-    let mut interval = interval(Duration::from_secs(1));
-    let now = Instant::now();
 
     bar.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}% {msg}MB/s ({eta})")
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% [{msg}] ({eta})",
+            )
             .unwrap()
             .progress_chars("=>-"),
     );
 
-    loop {
+    while !stats.is_complete() {
         interval.tick().await;
-        let progress =
-            stats.confirmed_data.load(Relaxed) as f64 / stats.total_data.load(Relaxed) as f64;
-        let speed = stats.confirmed_data.load(Relaxed) as f64 / now.elapsed().as_secs_f64() / 1_000_000_f64;
-        bar.set_message(format!("{:.2}", speed));
-        bar.set_position((progress * 100_f64) as u64);
+
+        let progress = stats.confirmed() as f64 / stats.total() as f64 * 100_f64;
+        let speed = stats.speed();
+        let packet_loss = stats.packet_loss();
+
+        bar.set_message(format!(
+            "{:.1}MB/s {:.1}% packet loss",
+            speed,
+            packet_loss * 100_f64
+        ));
+
+        bar.set_position(progress as u64);
+    }
+
+    bar.finish_with_message("complete");
+}
+
+/// prints a base64 encoded stats message to stdout
+async fn remote_stats_printer(stats: TransferStats) {
+    let mut interval = interval(Duration::from_secs(1));
+
+    while !stats.is_complete() {
+        interval.tick().await;
+
+        let stats = Stats::from(&stats); // create a Stats message
+                                         // allocate a buffer for the message
+        let mut buf = Vec::with_capacity(stats.encoded_len());
+        stats.encode(&mut buf).unwrap(); // infallible
+        let encoded = BASE64_STANDARD_NO_PAD.encode(&buf); // base64 encode the message
+        println!("{}", encoded); // print the encoded message
     }
 }
 
-/// connect to a remote client on a given port
+/// runs a command on the remote host & handles the output
+async fn command_runner(
+    client: Client,
+    command: String,
+    sent_packets: Option<Arc<AtomicUsize>>,
+    confirmed_packets: Option<Arc<AtomicUsize>>,
+    total_data: Option<Arc<AtomicUsize>>,
+    cancel_signal: Arc<Notify>,
+) -> Result<Option<u32>> {
+    debug!("executing command: {}", command);
+
+    let mut channel = client.get_channel().await?;
+    let mut status: Option<u32> = None;
+    channel.exec(true, command).await?;
+
+    loop {
+        select! {
+            _ = cancel_signal.notified() => {
+                debug!("cancel signal received");
+                channel.signal(Sig::INT).await?;
+                debug!("sent INT signal");
+                break;
+            }
+            message = channel.wait() => {
+                if let Some(message) = message {
+                    match message {
+                        ChannelMsg::Data { ref data } => {
+                            let message = String::from_utf8_lossy(data).replace('\n', "");
+                            let buffer = STANDARD_NO_PAD.decode(message)?;
+                            let stats = Stats::decode(&buffer[..])?;
+
+                            if let Some(sent_packets) = &sent_packets {
+                                sent_packets.store(stats.sent_packets as usize, Relaxed);
+                            }
+
+                            if let Some(confirmed_packets) = &confirmed_packets {
+                                confirmed_packets.store(stats.confirmed_packets as usize, Relaxed);
+                            }
+
+                            if let Some(total_data) = &total_data {
+                                total_data.store(stats.total_data as usize, Relaxed);
+                            }
+                        }
+                        ChannelMsg::ExtendedData { ref data, ext: 1 } => {
+                            error!("remote stderr: {}", String::from_utf8_lossy(data))
+                        }
+                        ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                        _ => {}
+                    }
+                } else {
+                    break
+                }
+            }
+        }
+    }
+
+    debug!("command runner finished with status {:?}", status);
+    Ok(status)
+}
+
+/// connects to a listening remote client
 async fn connect_stream(
     remote_addr: IpAddr,
     port: u16,
-    bind_addr: Option<IpAddr>,
-) -> Result<TcpStream> {
-    let bind = match bind_addr {
-        Some(addr) => SocketAddr::new(addr, 0),
-        None => "0.0.0.0:0".parse()?,
-    };
-
-    // connect to the remote client
-    loop {
-        let socket = TcpSocket::new_v4()?;
-        socket.bind(bind)?;
-
-        let remote_socket = SocketAddr::new(remote_addr, port);
-
-        if let Ok(stream) = socket.connect(remote_socket).await {
-            break Ok(stream);
+    options: &mut Options,
+) -> Result<CipherStream<TcpStream>> {
+    let tcp_stream = loop {
+        if let Ok(stream) = TcpStream::connect((remote_addr, port)).await {
+            break stream;
         } else {
-            // give the receiver time to start listening
+            // give the listener time to start listening
             sleep(Duration::from_millis(100)).await;
         }
-    }
+    };
+
+    let stream = CipherStream::new(tcp_stream, &options.control_crypto)?;
+    options.control_crypto.next_iv();
+    Ok(stream)
 }
 
+/// listens for a remote client to connect
+async fn listen_stream(
+    port: u16,
+    options: &mut Options,
+) -> Result<(CipherStream<TcpStream>, IpAddr)> {
+    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
+    let (stream, remote_addr) = listener.accept().await?;
+    let stream = CipherStream::new(stream, &options.control_crypto)?;
+    options.control_crypto.next_iv();
+    Ok((stream, remote_addr.ip()))
+}
+
+/// calculate the BLAKE3 hash of a file
 async fn hash_file<P: AsRef<Path>>(path: P) -> io::Result<Hash> {
     let file = File::open(path).await?;
     let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);

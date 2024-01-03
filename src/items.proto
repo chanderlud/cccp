@@ -25,7 +25,7 @@ message FileDetail {
   string path = 1; // file path relative to the destination directory
   uint64 size = 2; // file size in bytes
   optional bytes signature = 3; // blake3 hash of file
-  optional Crypto crypto = 4; // encryption details
+  Crypto crypto = 4; // encryption details
 }
 
 message Crypto {
@@ -35,10 +35,12 @@ message Crypto {
 }
 
 enum Cipher {
-  CHACHA8 = 0;
-  AES128 = 1;
-  CHACHA20 = 2;
-  AES256 = 3;
+  NONE = 0;
+  CHACHA8 = 1;
+  AES128 = 2;
+  AES192 = 3;
+  CHACHA20 =43;
+  AES256 = 5;
 }
 
 // the receiver already had these files
@@ -81,4 +83,10 @@ message Failure {
 // signals the receiver that the sender won't start new transfers
 message Done {
     uint32 reason = 1;
+}
+
+message Stats {
+  uint64 confirmed_packets = 1;
+  uint64 sent_packets = 2;
+  uint64 total_data = 3;
 }
