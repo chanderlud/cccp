@@ -14,7 +14,7 @@ use log::{debug, error, info, warn};
 use tokio::io;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::select;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::{interval, Instant};
 
 use crate::error::Error;
@@ -42,6 +42,7 @@ pub(crate) async fn main(
     rts_stream: CipherStream<TcpStream>,
     mut str_stream: CipherStream<TcpStream>,
     remote_addr: IpAddr,
+    cancel_signal: Arc<Notify>,
 ) -> Result<()> {
     info!("sending {} -> {}", options.source, options.destination);
 
@@ -163,6 +164,10 @@ pub(crate) async fn main(
         result = controller_handle => { debug!("controller exited: {:?}", result); result? },
         result = sender_future => { debug!("senders exited: {:?}", result); result },
         result = receiver_handle => { debug!("message receiver exited: {:?}", result); result? },
+        _ = cancel_signal.notified() => {
+            debug!("stop signal received");
+            Err(Error::stop())
+        }
     }
 }
 

@@ -257,6 +257,7 @@ async fn main() -> Result<()> {
                 rts_stream,
                 str_stream,
                 remote_ip,
+                cancel_signal
             );
 
             let command_future = async {
@@ -310,6 +311,7 @@ async fn main() -> Result<()> {
                 rts_stream,
                 str_stream,
                 remote_addr,
+                cancel_signal
             )
             .await?;
 
@@ -377,11 +379,12 @@ async fn run_main(
     rts_stream: CipherStream<TcpStream>,
     str_stream: CipherStream<TcpStream>,
     remote_addr: IpAddr,
+    cancel_signal: Arc<Notify>,
 ) -> Result<()> {
     if sender {
-        sender::main(options, stats, rts_stream, str_stream, remote_addr).await
+        sender::main(options, stats, rts_stream, str_stream, remote_addr, cancel_signal).await
     } else {
-        receiver::main(options, stats, rts_stream, str_stream, remote_addr).await
+        receiver::main(options, stats, rts_stream, str_stream, remote_addr, cancel_signal).await
     }
 }
 

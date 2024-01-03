@@ -37,6 +37,7 @@ pub(crate) enum ErrorKind {
     EmptyPath,
     InvalidExtension,
     UnexpectedMessage(Box<dyn Message>),
+    Stop,
 }
 
 impl From<io::Error> for Error {
@@ -182,6 +183,7 @@ impl std::fmt::Display for Error {
             ErrorKind::UnexpectedMessage(ref message) => {
                 write!(f, "Unexpected message {:?}", message)
             }
+            ErrorKind::Stop => write!(f, "Stop"),
         }
     }
 }
@@ -220,6 +222,12 @@ impl Error {
     pub(crate) fn unexpected_message(message: Box<dyn Message>) -> Self {
         Self {
             kind: ErrorKind::UnexpectedMessage(message),
+        }
+    }
+
+    pub(crate) fn stop() -> Self {
+        Self {
+            kind: ErrorKind::Stop,
         }
     }
 
