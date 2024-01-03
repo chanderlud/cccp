@@ -17,7 +17,6 @@ use crate::cipher::random_bytes;
 use crate::items::{Cipher, Crypto};
 use crate::PACKET_SIZE;
 
-// TODO add a help item for firewall stuff
 const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
   cccp is a fast, secure, and reliable file transfer utility
 
@@ -33,7 +32,11 @@ const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
   - CHAHA20
   - AES128
   - AES192
-  - AES256";
+  - AES256
+
+\x1B[1m\x1B[4mFirewall\x1B[0m\
+  - The first two ports are used for TCP streams which carry control messages
+  - The remaining ports are UDP sockets which carry data";
 
 #[derive(Parser)]
 #[clap(version, about = HELP_HEADING)]

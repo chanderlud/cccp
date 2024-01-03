@@ -178,7 +178,7 @@ pub(crate) async fn main(
     }
 
     let sockets = socket_factory(
-        options.start_port + 2, // the first two ports are used for control messages and confirmations
+        options.start_port,
         options.end_port,
         remote_addr,
         options.threads,
@@ -228,10 +228,7 @@ pub(crate) async fn main(
         result = controller_handle => { debug!("controller exited: {:?}", result); result? },
         result = receiver_future => { debug!("receivers exited: {:?}", result); result },
         result = message_sender_handle => { debug!("message sender exited: {:?}", result); result? },
-        _ = cancel_signal.notified() => {
-            debug!("stop signal received");
-            Err(Error::stop())
-        }
+        _ = cancel_signal.notified() => { debug!("stop signal received"); Ok(()) }
     }
 }
 
