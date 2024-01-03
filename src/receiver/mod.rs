@@ -413,7 +413,7 @@ fn free_space(path: &Path) -> Result<u64> {
     debug!("getting free space for {:?}", path);
     let stat = statvfs(&path)?;
 
-    Ok(stat.blocks_available() as u64 * stat.fragment_size())
+    Ok(stat.blocks_available() as u64 * stat.fragment_size() as u64)
 }
 
 /// returns the amount of free space in bytes for the given path

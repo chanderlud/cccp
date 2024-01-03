@@ -1,5 +1,6 @@
 #![feature(int_roundings)]
 
+use std::io::BufRead;
 use std::net::{IpAddr, SocketAddr};
 use std::ops::Not;
 use std::path::Path;
@@ -20,7 +21,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info, warn};
 use prost::Message;
 use rpassword::prompt_password;
-use russh::{ChannelMsg, Sig};
+use russh::ChannelMsg;
 use simple_logging::{log_to_file, log_to_stderr};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
@@ -124,6 +125,14 @@ async fn main() -> Result<()> {
             ctrl_c().await.expect("failed to listen for ctrl-c");
             debug!("ctrl-c received");
             cancel_signal.notify_waiters();
+        }
+    });
+
+    std::thread::spawn({
+        let cancel_signal = cancel_signal.clone();
+
+        move || {
+            wait_for_stop(cancel_signal);
         }
     });
 
@@ -529,8 +538,8 @@ async fn command_runner(
         select! {
             _ = cancel_signal.notified() => {
                 debug!("cancel signal received");
-                channel.signal(Sig::INT).await?;
-                debug!("sent INT signal");
+                channel.data(&b"STOP\n"[..]).await?;
+                debug!("sent STOP message");
                 break;
             }
             message = channel.wait() => {
@@ -621,4 +630,18 @@ async fn hash_file<P: AsRef<Path>>(path: P) -> io::Result<Hash> {
     }
 
     Ok(hasher.finalize())
+}
+
+fn wait_for_stop(signal: Arc<Notify>) {
+    let stdin = std::io::stdin();
+    let reader = std::io::BufReader::new(stdin);
+    let mut lines = reader.lines();
+
+    while let Some(Ok(line)) = lines.next() {
+        if line.contains("STOP") {
+            debug!("received STOP message");
+            signal.notify_waiters();
+            break;
+        }
+    }
 }
