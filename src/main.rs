@@ -125,6 +125,9 @@ async fn main() -> Result<()> {
             ctrl_c().await.expect("failed to listen for ctrl-c");
             debug!("ctrl-c received");
             cancel_signal.notify_waiters();
+            ctrl_c().await.expect("failed to listen for ctrl-c");
+            error!("ctrl-c received again. exiting");
+            std::process::exit(1);
         }
     });
 
@@ -220,19 +223,33 @@ async fn main() -> Result<()> {
 
             info!("connected to the remote host via ssh");
 
-            let command_handle = tokio::spawn(command_runner(
-                client,
-                options.format_command(sender, !options.stream_setup_mode),
-                sender.not().then_some(stats.sent_packets.clone()),
-                None,
-                None,
-                signal.clone(),
-            ));
+            let command_handle = tokio::spawn({
+                let stats = stats.clone();
+                let command = options.format_command(sender, !options.stream_setup_mode);
+                let signal = signal.clone();
 
-            // receiver -> sender stream
-            let rts = connect_stream(remote_ip, options.start_port, &mut options).await?;
-            // sender -> receiver stream
-            let str = connect_stream(remote_ip, options.start_port, &mut options).await?;
+                async move {
+                    let status = command_runner(
+                        client,
+                        command,
+                        sender.not().then_some(stats.sent_packets),
+                        None,
+                        None,
+                        signal,
+                    )
+                    .await;
+
+                    match status {
+                        Ok(status) if status != 0 => Err(Error::command_failed(status)),
+                        Err(error) => Err(error),
+                        Ok(_) => {
+                            debug!("remote command exited with status 0");
+                            sleep(Duration::from_secs(u64::MAX)).await; // sleep forever to keep main future alive
+                            Ok::<(), Error>(())
+                        }
+                    }
+                }
+            });
 
             let stats_handle = tokio::spawn({
                 let stats = stats.clone();
@@ -241,23 +258,18 @@ async fn main() -> Result<()> {
                 local_stats_printer(stats, interval)
             });
 
-            let main_future = run_main(sender, options, stats.clone(), rts, str, remote_ip, signal);
+            let main_future = async {
+                // receiver -> sender stream
+                let rts = connect_stream(remote_ip, &mut options).await?;
+                // sender -> receiver stream
+                let str = connect_stream(remote_ip, &mut options).await?;
 
-            let command_future = async {
-                match command_handle.await?? {
-                    Some(status) if status != 0 => {
-                        error!("remote command failed with status {}", status)
-                    }
-                    None => error!("remote command failed to exit"),
-                    _ => sleep(Duration::from_secs(u64::MAX)).await, // wait forever to allow the other futures to complete
-                }
-
-                Ok::<(), Error>(())
+                run_main(sender, options, stats.clone(), rts, str, remote_ip, signal).await
             };
 
             select! {
-                result = command_future => result?,
-                result = main_future => result?
+                result = command_handle => { debug!("command handle completed"); result?? },
+                result = main_future => { debug!("main future completed"); result? }
             }
 
             stats.complete.store(true, Relaxed);
@@ -276,8 +288,8 @@ async fn main() -> Result<()> {
             let (rts, str, remote_addr) = match options.stream_setup_mode {
                 // remote clients usually are in listen mode
                 SetupMode::Listen => {
-                    let (rts, addr) = listen_stream(options.start_port, &mut options).await?;
-                    let (str, _) = listen_stream(options.start_port, &mut options).await?;
+                    let (rts, addr) = listen_stream(&mut options).await?;
+                    let (str, _) = listen_stream(&mut options).await?;
 
                     (rts, str, addr)
                 }
@@ -286,8 +298,8 @@ async fn main() -> Result<()> {
                     // unwrap is safe because host must be specified for remote IoSpec
                     let addr = options.destination.host.unwrap().ip();
 
-                    let rts = connect_stream(addr, options.start_port, &mut options).await?;
-                    let str = connect_stream(addr, options.start_port, &mut options).await?;
+                    let rts = connect_stream(addr, &mut options).await?;
+                    let str = connect_stream(addr, &mut options).await?;
 
                     (rts, str, addr)
                 }
@@ -344,9 +356,11 @@ async fn main() -> Result<()> {
             let sender_status = sender_handle.await??;
             let receiver_status = receiver_handle.await??;
 
-            if sender_status != Some(0) {
+            if sender_status != 0 {
                 error!("sender command returned status {:?}", sender_status);
-            } else if receiver_status != Some(0) {
+            }
+
+            if receiver_status != 0 {
                 error!("receiver command returned status {:?}", receiver_status);
             }
 
@@ -519,7 +533,7 @@ async fn command_runner(
     confirmed_packets: Option<Arc<AtomicUsize>>,
     total_data: Option<Arc<AtomicUsize>>,
     cancel_signal: Arc<Notify>,
-) -> Result<Option<u32>> {
+) -> Result<u32> {
     debug!("executing command: {}", command);
 
     let mut channel = client.get_channel().await?;
@@ -531,7 +545,7 @@ async fn command_runner(
                 // the remote client listens for STOP in it's stdin
                 // this is more reliable & cross platform than sending a signal
                 channel.data(&b"STOP\n"[..]).await?;
-                break Ok(None);
+                debug!("sent STOP message");
             }
             message = channel.wait() => {
                 if let Some(message) = message {
@@ -554,20 +568,15 @@ async fn command_runner(
                             }
                         }
                         ChannelMsg::ExtendedData { ref data, ext: 1 } => {
-                            let error = String::from_utf8_lossy(data);
-
-                            if error.contains("not recognized as an internal or external command") {
-                                break Err(io::Error::new(
-                                    io::ErrorKind::NotFound,
-                                    "cccp is not installed on the remote host",
-                                ).into())
-                            }
+                            let error = String::from_utf8_lossy(data).replace('\n', "");
+                            error!("remote client stderr: {}", error);
                         }
-                        ChannelMsg::ExitStatus { exit_status } => break Ok(Some(exit_status)),
-                        _ => {}
+                        ChannelMsg::ExitStatus { exit_status: 127 } => break Err(Error::command_not_found()),
+                        ChannelMsg::ExitStatus { exit_status } => break Ok(exit_status),
+                        _ => debug!("other message: {:?}", message),
                     }
                 } else {
-                    break Ok(None)
+                    break Err(Error::no_exit_status())
                 }
             }
         }
@@ -577,11 +586,10 @@ async fn command_runner(
 /// connects to a listening remote client
 async fn connect_stream(
     remote_addr: IpAddr,
-    port: u16,
     options: &mut Options,
 ) -> Result<CipherStream<TcpStream>> {
     let tcp_stream = loop {
-        if let Ok(stream) = TcpStream::connect((remote_addr, port)).await {
+        if let Ok(stream) = TcpStream::connect((remote_addr, options.start_port)).await {
             break stream;
         } else {
             // give the listener time to start listening
@@ -597,10 +605,9 @@ async fn connect_stream(
 
 /// listens for a remote client to connect
 async fn listen_stream(
-    port: u16,
     options: &mut Options,
 ) -> Result<(CipherStream<TcpStream>, IpAddr)> {
-    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
+    let listener = TcpListener::bind(("0.0.0.0", options.start_port)).await?;
     let (tcp_stream, remote_addr) = listener.accept().await?;
 
     let stream = CipherStream::new(tcp_stream, &options.control_crypto)?;
