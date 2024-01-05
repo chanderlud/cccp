@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::error;
 use std::fmt::{Display, Formatter};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::ops::Not;
@@ -34,7 +34,7 @@ const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
   - AES192
   - AES256
 
-\x1B[1m\x1B[4mFirewall\x1B[0m\
+\x1B[1m\x1B[4mFirewall\x1B[0m
   - The first two ports are used for TCP streams which carry control messages
   - The remaining ports are UDP sockets which carry data";
 
@@ -189,7 +189,7 @@ pub(crate) enum Mode {
 }
 
 impl FromStr for Mode {
-    type Err = OptionParseError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
@@ -209,7 +209,7 @@ pub(crate) enum SetupMode {
 }
 
 impl FromStr for SetupMode {
-    type Err = OptionParseError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
@@ -245,7 +245,7 @@ impl Not for SetupMode {
 }
 
 impl FromStr for Crypto {
-    type Err = OptionParseError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut captures = s.split(':');
@@ -305,10 +305,10 @@ pub(crate) struct IoSpec {
 }
 
 impl FromStr for IoSpec {
-    type Err = OptionParseError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let captures = Regex::new("(?:(?:([\\w-]+)@)?([\\w.-]+)(?::(\\d+))?:)?([ \\w/.-]+)")
+        let captures = Regex::new("(?:(?:([\\w-]+)@)?([\\w.-]+)(?::(\\d+))?:)?(.+)")
             .unwrap() // infallible
             .captures(s)
             .ok_or(Self::Err::invalid_io_spec())?;
@@ -379,7 +379,7 @@ impl IoSpec {
 }
 
 #[derive(Debug)]
-pub struct OptionParseError {
+pub struct Error {
     kind: ErrorKind,
 }
 
@@ -397,14 +397,14 @@ enum ErrorKind {
 }
 
 #[allow(deprecated)]
-impl Display for OptionParseError {
+impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match &self.kind {
-                ErrorKind::Io(error) => error.description(),
-                ErrorKind::Decode(error) => error.description(),
+                ErrorKind::Io(error) => error::Error::description(error),
+                ErrorKind::Decode(error) => error::Error::description(error),
                 ErrorKind::InvalidIoSpec => "invalid IoSpec, refer to --help for more information",
                 ErrorKind::UnknownMode => "the mode can be either sender or receiver",
                 ErrorKind::InvalidCipher => "invalid cipher",
@@ -417,9 +417,9 @@ impl Display for OptionParseError {
     }
 }
 
-impl Error for OptionParseError {}
+impl error::Error for Error {}
 
-impl From<io::Error> for OptionParseError {
+impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
         Self {
             kind: ErrorKind::Io(error),
@@ -427,7 +427,7 @@ impl From<io::Error> for OptionParseError {
     }
 }
 
-impl From<base64::DecodeError> for OptionParseError {
+impl From<base64::DecodeError> for Error {
     fn from(error: base64::DecodeError) -> Self {
         Self {
             kind: ErrorKind::Decode(error),
@@ -435,7 +435,7 @@ impl From<base64::DecodeError> for OptionParseError {
     }
 }
 
-impl OptionParseError {
+impl Error {
     fn invalid_key() -> Self {
         Self {
             kind: ErrorKind::InvalidKey,
