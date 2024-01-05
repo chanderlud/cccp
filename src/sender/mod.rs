@@ -540,6 +540,7 @@ fn files_and_dirs(
     recursive: bool,
 ) -> io::Result<()> {
     if !path.exists() {
+        warn!("dir crawler found a path that does not exist: {:?}", path);
         return Ok(());
     }
 
