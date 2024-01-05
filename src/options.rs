@@ -78,7 +78,7 @@ pub(crate) struct Options {
     pub(crate) control_crypto: Crypto,
 
     /// Encrypt the data stream
-    #[clap(short = 'S', long, default_value = "NONE")]
+    #[clap(short = 'S', long, default_value = "CHACHA20")]
     pub(crate) stream_crypto: Crypto,
 
     /// Receive timeout in MS
@@ -88,6 +88,14 @@ pub(crate) struct Options {
     /// Limit for concurrent jobs
     #[clap(short, long, default_value_t = 1_000)]
     pub(crate) job_limit: usize,
+
+    /// Requeue interval in MS
+    #[clap(short = 'i', long, default_value_t = 1_000)]
+    pub(crate) requeue_interval: u64,
+
+    /// Maximum number of send/receive retries
+    #[clap(short = 'M', long, default_value_t = 10)]
+    pub(crate) max_retries: usize,
 
     /// Command to execute cccp
     #[clap(short = 'E', long, default_value = "cccp")]
@@ -147,6 +155,8 @@ impl Options {
             format!("-j {}", self.job_limit),
             format!("-c {}", self.control_crypto),
             format!("-S {}", self.stream_crypto),
+            format!("-i {}", self.requeue_interval),
+            format!("-M {}", self.max_retries),
             format!("\"{}\"", self.source),
             format!("\"{}\"", self.destination),
         ];

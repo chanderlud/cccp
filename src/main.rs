@@ -53,12 +53,8 @@ const WRITE_BUFFER_SIZE: usize = TRANSFER_BUFFER_SIZE * 100;
 const TRANSFER_BUFFER_SIZE: usize = 1024;
 const INDEX_SIZE: usize = std::mem::size_of::<u64>();
 const ID_SIZE: usize = std::mem::size_of::<u32>();
-const MAX_RETRIES: usize = 10;
 // UDP header + ID + INDEX + DATA
 const PACKET_SIZE: usize = 8 + ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE;
-
-// how long to wait for a job to be confirmed before requeuing it
-const REQUEUE_INTERVAL: Duration = Duration::from_millis(1_000);
 
 #[derive(Clone)]
 struct TransferStats {

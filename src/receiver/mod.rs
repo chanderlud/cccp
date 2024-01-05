@@ -23,7 +23,7 @@ use crate::error::Error;
 use crate::items::{message, ConfirmationIndexes, Message, StartIndex};
 use crate::receiver::writer::{writer, FileDetails, SplitQueue};
 use crate::{
-    socket_factory, CipherStream, Options, Result, TransferStats, ID_SIZE, INDEX_SIZE, MAX_RETRIES,
+    socket_factory, CipherStream, Options, Result, TransferStats, ID_SIZE, INDEX_SIZE,
     TRANSFER_BUFFER_SIZE,
 };
 
@@ -212,7 +212,14 @@ pub(crate) async fn main(
 
     let handles: Vec<_> = sockets
         .into_iter()
-        .map(|socket| tokio::spawn(receiver(writer_queue.clone(), socket, receive_timeout)))
+        .map(|socket| {
+            tokio::spawn(receiver(
+                writer_queue.clone(),
+                socket,
+                receive_timeout,
+                options.max_retries,
+            ))
+        })
         .collect();
 
     let receiver_future = async {
@@ -232,11 +239,16 @@ pub(crate) async fn main(
     }
 }
 
-async fn receiver(queue: WriterQueue, socket: UdpSocket, receive_timeout: Duration) -> Result<()> {
+async fn receiver(
+    queue: WriterQueue,
+    socket: UdpSocket,
+    receive_timeout: Duration,
+    max_retries: usize,
+) -> Result<()> {
     let mut buf = [0; ID_SIZE + INDEX_SIZE + TRANSFER_BUFFER_SIZE]; // buffer for receiving data
     let mut retries = 0; // counter to keep track of retries
 
-    while retries < MAX_RETRIES {
+    while retries < max_retries {
         match timeout(receive_timeout, socket.recv(&mut buf)).await {
             Ok(Ok(read)) if read > 0 => {
                 retries = 0; // reset retries
@@ -263,7 +275,7 @@ async fn receiver(queue: WriterQueue, socket: UdpSocket, receive_timeout: Durati
         }
     }
 
-    if retries == MAX_RETRIES {
+    if retries == max_retries {
         Err(Error::max_retries())
     } else {
         Ok(())

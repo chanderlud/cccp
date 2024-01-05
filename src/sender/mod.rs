@@ -22,7 +22,7 @@ use crate::items::{message, Confirmations, FileDetail, Manifest, Message, StartI
 use crate::sender::reader::reader;
 use crate::{
     hash_file, socket_factory, CipherStream, Options, Result, TransferStats, ID_SIZE, INDEX_SIZE,
-    MAX_RETRIES, REQUEUE_INTERVAL, TRANSFER_BUFFER_SIZE,
+    TRANSFER_BUFFER_SIZE,
 };
 
 mod reader;
@@ -122,6 +122,7 @@ pub(crate) async fn main(
         job_sender.clone(),
         stats.confirmed_packets.clone(),
         read.clone(),
+        Duration::from_millis(options.requeue_interval),
     ));
 
     tokio::spawn(add_permits_at_rate(send.clone(), options.pps()));
@@ -136,6 +137,7 @@ pub(crate) async fn main(
                 cache.clone(),
                 send.clone(),
                 stats.sent_packets.clone(),
+                options.max_retries,
             ))
         })
         .collect();
@@ -175,10 +177,11 @@ async fn sender(
     cache: JobCache,
     send: Arc<Semaphore>,
     sent: Arc<AtomicUsize>,
+    max_retries: usize,
 ) -> Result<()> {
     let mut retries = 0;
 
-    while retries < MAX_RETRIES {
+    while retries < max_retries {
         let permit = send.acquire().await?; // acquire a permit
         let mut job = job_receiver.recv().await?; // get a job from the queue
 
@@ -198,7 +201,7 @@ async fn sender(
         permit.forget();
     }
 
-    if retries == MAX_RETRIES {
+    if retries == max_retries {
         Err(Error::max_retries())
     } else {
         Ok(())
@@ -350,6 +353,7 @@ async fn receive_confirmations(
     job_sender: AsyncSender<Job>,
     confirmed_packets: Arc<AtomicUsize>,
     read: Arc<Semaphore>,
+    requeue_interval: Duration,
 ) -> Result<()> {
     // this solves a problem where a confirmation is received after a job has already been requeued
     let lost_confirmations: Arc<Mutex<HashSet<(u32, u64)>>> = Default::default();
@@ -373,7 +377,7 @@ async fn receive_confirmations(
                     .await
                     .iter()
                     .filter(|(_, unconfirmed)| {
-                        unconfirmed.cached_at.unwrap().elapsed() > REQUEUE_INTERVAL
+                        unconfirmed.cached_at.unwrap().elapsed() > requeue_interval
                     })
                     .map(|(key, _)| *key)
                     .collect();
