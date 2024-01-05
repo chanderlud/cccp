@@ -6,6 +6,7 @@ use prost::Message;
 use tokio::io;
 use tokio::sync::AcquireError;
 
+/// generic error type for cccp
 #[derive(Debug)]
 pub(crate) struct Error {
     pub(crate) kind: ErrorKind,
@@ -33,10 +34,18 @@ pub(crate) enum ErrorKind {
     MaxRetries,
     #[cfg(windows)]
     StatusError,
+    /// a file transfer failure with reason
     Failure(u32),
     EmptyPath,
     InvalidExtension,
+    /// an unexpected protobuf message was encountered
     UnexpectedMessage(Box<dyn Message>),
+    /// the command did not finish
+    NoExitStatus,
+    /// the cccp command was not found on the remote host
+    CommandNotFound,
+    /// the command failed with a non-zero exit status
+    CommandFailed(u32),
 }
 
 impl From<io::Error> for Error {
@@ -176,12 +185,15 @@ impl std::fmt::Display for Error {
             ErrorKind::MaxRetries => write!(f, "Max retries"),
             #[cfg(windows)]
             ErrorKind::StatusError => write!(f, "Status error"),
-            ErrorKind::Failure(ref reason) => write!(f, "Failure: {}", reason),
-            ErrorKind::EmptyPath => write!(f, "Empty path"),
-            ErrorKind::InvalidExtension => write!(f, "Invalid extension"),
+            ErrorKind::Failure(ref reason) => write!(f, "failure: {}", reason),
+            ErrorKind::EmptyPath => write!(f, "empty path"),
+            ErrorKind::InvalidExtension => write!(f, "invalid extension"),
             ErrorKind::UnexpectedMessage(ref message) => {
-                write!(f, "Unexpected message {:?}", message)
+                write!(f, "unexpected message {:?}", message)
             }
+            ErrorKind::NoExitStatus => write!(f, "no exit status"),
+            ErrorKind::CommandNotFound => write!(f, "cccp command not found"),
+            ErrorKind::CommandFailed(ref status) => write!(f, "command failed with status {}", status),
         }
     }
 }
@@ -220,6 +232,24 @@ impl Error {
     pub(crate) fn unexpected_message(message: Box<dyn Message>) -> Self {
         Self {
             kind: ErrorKind::UnexpectedMessage(message),
+        }
+    }
+
+    pub(crate) fn no_exit_status() -> Self {
+        Self {
+            kind: ErrorKind::NoExitStatus,
+        }
+    }
+
+    pub(crate) fn command_not_found() -> Self {
+        Self {
+            kind: ErrorKind::CommandNotFound,
+        }
+    }
+
+    pub(crate) fn command_failed(status: u32) -> Self {
+        Self {
+            kind: ErrorKind::CommandFailed(status),
         }
     }
 
