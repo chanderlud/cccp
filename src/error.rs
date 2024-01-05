@@ -193,7 +193,9 @@ impl std::fmt::Display for Error {
             }
             ErrorKind::NoExitStatus => write!(f, "no exit status"),
             ErrorKind::CommandNotFound => write!(f, "cccp command not found"),
-            ErrorKind::CommandFailed(ref status) => write!(f, "command failed with status {}", status),
+            ErrorKind::CommandFailed(ref status) => {
+                write!(f, "command failed with status {}", status)
+            }
         }
     }
 }

@@ -604,9 +604,7 @@ async fn connect_stream(
 }
 
 /// listens for a remote client to connect
-async fn listen_stream(
-    options: &mut Options,
-) -> Result<(CipherStream<TcpStream>, IpAddr)> {
+async fn listen_stream(options: &mut Options) -> Result<(CipherStream<TcpStream>, IpAddr)> {
     let listener = TcpListener::bind(("0.0.0.0", options.start_port)).await?;
     let (tcp_stream, remote_addr) = listener.accept().await?;
 
