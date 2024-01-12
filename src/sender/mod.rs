@@ -12,7 +12,7 @@ use futures::{StreamExt, TryStreamExt};
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, error, info, warn};
 use tokio::io;
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::UdpSocket;
 use tokio::select;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::{interval, Instant};
@@ -38,9 +38,9 @@ struct Job {
 
 pub(crate) async fn main(
     options: Options,
-    stats: TransferStats,
-    rts_stream: CipherStream<TcpStream>,
-    mut str_stream: CipherStream<TcpStream>,
+    stats: &TransferStats,
+    rts_stream: CipherStream,
+    mut str_stream: CipherStream,
     remote_addr: IpAddr,
     cancel_signal: Arc<Notify>,
 ) -> Result<()> {
@@ -148,7 +148,7 @@ pub(crate) async fn main(
         manifest.files,
         job_sender.clone(),
         read,
-        stats,
+        stats.clone(),
         controller_receiver,
     ));
 
@@ -210,7 +210,7 @@ async fn sender(
 
 async fn controller(
     options: Options,
-    mut control_stream: CipherStream<TcpStream>,
+    mut control_stream: CipherStream,
     mut files: HashMap<u32, FileDetail>,
     job_sender: AsyncSender<Job>,
     read: Arc<Semaphore>,
@@ -308,7 +308,7 @@ async fn controller(
 }
 
 async fn start_file_transfer(
-    control_stream: &mut CipherStream<TcpStream>,
+    control_stream: &mut CipherStream,
     id: u32,
     details: &FileDetail,
     base_path: &Path,
@@ -449,7 +449,7 @@ async fn add_permits_at_rate(semaphore: Arc<Semaphore>, rate: u64) {
 
 /// split the message stream into `Confirmation` and `End + Failure` messages
 async fn split_receiver(
-    mut stream: CipherStream<TcpStream>,
+    mut stream: CipherStream,
     confirmation_sender: AsyncSender<Confirmations>,
     controller_sender: AsyncSender<Message>,
 ) -> Result<()> {

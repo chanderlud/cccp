@@ -13,7 +13,7 @@ use futures::{StreamExt, TryStreamExt};
 use kanal::{AsyncReceiver, AsyncSender};
 use log::{debug, error, info, warn};
 use tokio::fs::{create_dir, metadata};
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::UdpSocket;
 use tokio::select;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
@@ -39,9 +39,9 @@ struct Job {
 
 pub(crate) async fn main(
     options: Options,
-    stats: TransferStats,
-    rts_stream: CipherStream<TcpStream>,
-    mut str_stream: CipherStream<TcpStream>,
+    stats: &TransferStats,
+    rts_stream: CipherStream,
+    mut str_stream: CipherStream,
     remote_addr: IpAddr,
     cancel_signal: Arc<Notify>,
 ) -> Result<()> {
@@ -283,7 +283,7 @@ async fn receiver(
 }
 
 async fn controller(
-    mut control_stream: CipherStream<TcpStream>,
+    mut control_stream: CipherStream,
     mut files: HashMap<u32, FileDetails>,
     writer_queue: WriterQueue,
     confirmation_sender: AsyncSender<(u32, u64)>,
@@ -408,7 +408,7 @@ async fn send_confirmations(
 
 /// send messages from a channel to a cipher stream
 async fn send_messages<M: prost::Message>(
-    mut stream: CipherStream<TcpStream>,
+    mut stream: CipherStream,
     receiver: AsyncReceiver<M>,
 ) -> Result<()> {
     while let Ok(message) = receiver.recv().await {
@@ -423,7 +423,7 @@ async fn send_messages<M: prost::Message>(
 fn free_space(path: &Path) -> Result<u64> {
     use nix::sys::statvfs::statvfs;
 
-    let path = format_path(path)?;
+    let path = parent_path(path)?;
     debug!("getting free space for {:?}", path);
     let stat = statvfs(&path)?;
 
@@ -436,7 +436,7 @@ fn free_space(path: &Path) -> Result<u64> {
     use widestring::U16CString;
     use windows_sys::Win32::Storage::FileSystem;
 
-    let path = format_path(path)?;
+    let path = parent_path(path)?;
     let path = U16CString::from_os_str(path)?;
 
     let mut free_bytes = 0_u64;
@@ -459,7 +459,7 @@ fn free_space(path: &Path) -> Result<u64> {
 }
 
 /// returns the absolute path of the first existing parent directory
-fn format_path(path: &Path) -> Result<PathBuf> {
+fn parent_path(path: &Path) -> Result<PathBuf> {
     let mut path = path.to_path_buf();
 
     if !path.is_absolute() {

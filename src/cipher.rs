@@ -6,7 +6,8 @@ use prost::Message;
 use rand::rngs::{OsRng, StdRng};
 use rand::{RngCore, SeedableRng};
 use tokio::io;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use crate::items::{Cipher, Crypto};
 use crate::Result;
@@ -31,13 +32,13 @@ where
     }
 }
 
-pub(crate) struct CipherStream<S: AsyncWrite + AsyncRead + Unpin> {
-    stream: S,
+pub(crate) struct CipherStream {
+    stream: TcpStream,
     cipher: Box<dyn StreamCipherWrapper>,
 }
 
-impl<S: AsyncWrite + AsyncRead + Unpin> CipherStream<S> {
-    pub(crate) fn new(stream: S, crypto: &Crypto) -> Result<Self> {
+impl CipherStream {
+    pub(crate) fn new(stream: TcpStream, crypto: &Crypto) -> Result<Self> {
         Ok(Self {
             stream,
             cipher: crypto.make_cipher()?,
