@@ -36,7 +36,7 @@ main() {
                        | grep -E '^v[0.1.0-9.]+$' \
                        | $sort --version-sort \
                        | tail -n1)
-    sh ./binary-installer.sh --force --git japaric/cross --tag $tag --target $target
+    sh ci/binary-installer.sh --force --git japaric/cross --tag $tag --target $target
 }
 
 main
