@@ -12,31 +12,26 @@ main() {
 
     # Builds for iOS are done on OSX, but require the specific target to be
     # installed.
-    case $TARGET in
-        aarch64-apple-ios)
-            rustup target install aarch64-apple-ios
-            ;;
-        armv7-apple-ios)
-            rustup target install armv7-apple-ios
-            ;;
-        armv7s-apple-ios)
-            rustup target install armv7s-apple-ios
-            ;;
-        i386-apple-ios)
-            rustup target install i386-apple-ios
-            ;;
-        x86_64-apple-ios)
-            rustup target install x86_64-apple-ios
-            ;;
-    esac
+    # case $TARGET in
+    #     aarch64-apple-ios)
+    #         rustup target install aarch64-apple-ios
+    #         ;;
+    #     armv7-apple-ios)
+    #         rustup target install armv7-apple-ios
+    #         ;;
+    #     armv7s-apple-ios)
+    #         rustup target install armv7s-apple-ios
+    #         ;;
+    #     i386-apple-ios)
+    #         rustup target install i386-apple-ios
+    #         ;;
+    #     x86_64-apple-ios)
+    #         rustup target install x86_64-apple-ios
+    #         ;;
+    # esac
 
-    # This fetches latest stable release
-    local tag=$(git ls-remote --tags --refs --exit-code https://github.com/japaric/cross \
-                       | cut -d/ -f3 \
-                       | grep -E '^v[0.1.0-9.]+$' \
-                       | $sort --version-sort \
-                       | tail -n1)
-    sh ci/binary-installer.sh --force --git japaric/cross --tag $tag --target $target
+    curl -LSfs https://rossmacarthur.github.io/install/crate.sh \
+        | bash -s -- --repo "japaric/cross" --to ~/.cargo/bin
 }
 
 main
