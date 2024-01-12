@@ -3,6 +3,8 @@
 set -ex
 
 main() {
+    docker pull ghcr.io/cross-rs/$TARGET
+
     cross build --target $TARGET
     cross build --target $TARGET --release
 
