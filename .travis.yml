@@ -12,7 +12,7 @@ env:
 addons:
   apt:
     packages:
-      - docker-ce
+      - docker
 
 matrix:
   include:
