@@ -3,9 +3,12 @@ set -ex
 main() {
     local target=
     if [ $TRAVIS_OS_NAME = linux ]; then
+        apt-get update
+        apt-get install -y protobuf-compiler
         target=x86_64-unknown-linux-musl
         sort=sort
     else
+        brew install protobuf
         target=x86_64-apple-darwin
         sort=gsort  # for `sort --sort-version`, from brew's coreutils.
     fi
