@@ -38,7 +38,7 @@ main() {
                        | tail -n1)
 
     # sh ci/binary-installer.sh --force --git japaric/cross --tag $tag --target $target
-    sh cargo install cross
+    sh ~/.cargo/bin/cargo install cross
     docker ps -a
 }
 
