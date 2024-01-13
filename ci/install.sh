@@ -30,8 +30,16 @@ main() {
     #         ;;
     # esac
 
-    curl -LSfs https://rossmacarthur.github.io/install/crate.sh \
-        | bash -s -- --repo "japaric/cross" --to ~/.cargo/bin
+    # This fetches latest stable release
+    local tag=$(git ls-remote --tags --refs --exit-code https://github.com/japaric/cross \
+                       | cut -d/ -f3 \
+                       | grep -E '^v[0.1.0-9.]+$' \
+                       | $sort --version-sort \
+                       | tail -n1)
+
+    # sh ci/binary-installer.sh --force --git japaric/cross --tag $tag --target $target
+    sh cargo install cross
+    docker ps -a
 }
 
 main
