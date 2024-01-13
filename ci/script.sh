@@ -5,7 +5,7 @@ set -ex
 main() {
     # set CROSS_CONTAINER_OPTS="--platform linux/amd64"
     rustup component add rustfmt
-    cross fmt --target $TARGET
+    cargot fmt -- --check
     cross build --target $TARGET
 
     if [ ! -z $DISABLE_TESTS ]; then
