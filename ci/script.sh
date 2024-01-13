@@ -4,7 +4,7 @@ set -ex
 
 main() {
     # set CROSS_CONTAINER_OPTS="--platform linux/amd64"
-    rustup component add rustfmt --toolchain $TARGET
+    rustup component add rustfmt
     cross fmt --target $TARGET
     cross build --target $TARGET
 
