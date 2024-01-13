@@ -9,11 +9,6 @@ env:
   global:
     - CRATE_NAME=cccp
 
-addons:
-  apt:
-    packages:
-      - docker
-
 matrix:
   include:
     # Linux
@@ -48,6 +43,11 @@ matrix:
     - env: TARGET=x86_64-pc-windows-gnu
 
 before_install:
+  - sudo systemctl stop docker.service && sudo systemctl stop docker.socket
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+  - yes | sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu 20 stable"
+  - sudo apt-get update
+  - sudo apt-get -y -o Dpkg::Options::="--force-confnew" install docker-ce
   - set -e
   - rustup self update
 
