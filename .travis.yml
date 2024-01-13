@@ -54,6 +54,7 @@ before_install:
   - sudo systemctl status docker.service
   - set -e
   - rustup self update
+  - rustup component add rustfmt
 
 install:
   - source ~/.cargo/env || true
