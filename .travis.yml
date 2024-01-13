@@ -44,7 +44,7 @@ matrix:
 
 before_install:
   - sudo systemctl stop docker.service && sudo systemctl stop docker.socket
-  - sudo apt-get uninstall docker-ce docker-ce-cli containerd.io
+  - sudo apt-get remove docker-ce docker-ce-cli containerd.io
   - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/docker-ce_20.10.24~3-0~ubuntu-jammy_amd64.deb
   - sudo dpkg --force-confnew -i docker-ce_20.10.24~3-0~ubuntu-jammy_amd64.deb
   - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/docker-ce-cli_20.10.24~3-0~ubuntu-jammy_amd64.deb
