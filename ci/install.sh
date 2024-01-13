@@ -3,8 +3,6 @@ set -ex
 main() {
     local target=
     if [ $TRAVIS_OS_NAME = linux ]; then
-        sudo apt-get update
-        sudo apt-get install -y protobuf-compiler
         target=x86_64-unknown-linux-musl
         sort=sort
     else
@@ -34,15 +32,15 @@ main() {
     # esac
 
     # This fetches latest stable release
-    # local tag=$(git ls-remote --tags --refs --exit-code https://github.com/japaric/cross \
-    #                    | cut -d/ -f3 \
-    #                    | grep -E '^v[0.1.0-9.]+$' \
-    #                    | $sort --version-sort \
-    #                    | tail -n1)
+    local tag=$(git ls-remote --tags --refs --exit-code https://github.com/japaric/cross \
+                       | cut -d/ -f3 \
+                       | grep -E '^v[0.1.0-9.]+$' \
+                       | $sort --version-sort \
+                       | tail -n1)
 
-    # sh ci/binary-installer.sh --force --git japaric/cross --tag $tag --target $target
+    sh ci/binary-installer.sh --force --git japaric/cross --tag $tag --target $target
 
-    cargo install cross --git https://github.com/cross-rs/cross
+    # cargo install cross --git https://github.com/cross-rs/cross
 }
 
 main

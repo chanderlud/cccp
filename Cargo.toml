@@ -42,6 +42,9 @@ widestring = "1.0"
 [build-dependencies]
 prost-build = "0.12"
 
+[package.metadata.cross.target.aarch64-unknown-linux-gnu]
+pre-build = ["apt update && apt upgrade && apt install -y protobuf-compiler"]
+
 [profile.release]
 opt-level = 3
 lto = true
