@@ -3,8 +3,8 @@ set -ex
 main() {
     local target=
     if [ $TRAVIS_OS_NAME = linux ]; then
-        apt-get update
-        apt-get install -y protobuf-compiler
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
         target=x86_64-unknown-linux-musl
         sort=sort
     else
