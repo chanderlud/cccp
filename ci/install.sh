@@ -38,7 +38,6 @@ main() {
                        | tail -n1)
 
     sh ci/binary-installer.sh --force --git japaric/cross --tag $tag --target $target
-    docker ps -a
 }
 
 main
