@@ -6,7 +6,6 @@ main() {
         target=x86_64-unknown-linux-musl
         sort=sort
     else
-        brew install protobuf
         target=x86_64-apple-darwin
         sort=gsort  # for `sort --sort-version`, from brew's coreutils.
     fi
@@ -30,15 +29,6 @@ main() {
     #         rustup target install x86_64-apple-ios
     #         ;;
     # esac
-
-    # This fetches latest stable release
-    # local tag=$(git ls-remote --tags --refs --exit-code https://github.com/japaric/cross \
-    #                    | cut -d/ -f3 \
-    #                    | grep -E '^v[0.1.0-9.]+$' \
-    #                    | $sort --version-sort \
-    #                    | tail -n1)
-
-    # sh ci/binary-installer.sh --force --git japaric/cross --tag $tag --target $target
 
     cargo install cross --git https://github.com/cross-rs/cross
 }

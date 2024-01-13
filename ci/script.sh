@@ -4,13 +4,13 @@ set -ex
 
 main() {
     # set CROSS_CONTAINER_OPTS="--platform linux/amd64"
+    cross fmt --target $TARGET
     cross build --target $TARGET
 
     if [ ! -z $DISABLE_TESTS ]; then
         return
     fi
 
-    cross fmt --target $TARGET
     cross clippy --target $TARGET
 }
 
