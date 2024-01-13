@@ -39,7 +39,6 @@ main() {
 
     # sh ci/binary-installer.sh --force --git japaric/cross --tag $tag --target $target
 
-    source "$HOME/.cargo/env"
     cargo install cross --git https://github.com/cross-rs/cross
 }
 
