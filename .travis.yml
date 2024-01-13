@@ -44,8 +44,14 @@ matrix:
 
 before_install:
   - sudo systemctl stop docker.service && sudo systemctl stop docker.socket
-  - sudo apt-get remove docker.io
-  - sudo apt-get install docker.io=23.*
+  - for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
+  - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/docker-ce_20.10.24~3-0~ubuntu-jammy_amd64.deb
+  - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/docker-ce-cli_20.10.24~3-0~ubuntu-jammy_amd64.deb
+  - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/docker-buildx-plugin_0.11.2-1~ubuntu.22.04~jammy_amd64.deb
+  - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/docker-compose-plugin_2.6.0~ubuntu-jammy_amd64.deb
+  - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/containerd.io_1.6.9-1_amd64.deb
+  - sudo dpkg -i containerd.io_1.6.9-1_amd64.deb docker-ce_20.10.24~3-0~ubuntu-jammy_amd64.deb docker-ce-cli_20.10.24~3-0~ubuntu-jammy_amd64.deb docker-buildx-plugin_0.11.2-1~ubuntu.22.04~jammy_amd64.deb docker-compose-plugin_2.6.0~ubuntu-jammy_amd64.deb
+  - sudo systemctl status docker.service
   - set -e
   - rustup self update
 
