@@ -9,6 +9,11 @@ env:
   global:
     - CRATE_NAME=cccp
 
+addons:
+  apt:
+    packages:
+      - docker-ce
+
 matrix:
   include:
     # Linux
