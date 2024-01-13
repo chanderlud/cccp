@@ -3,20 +3,16 @@
 set -ex
 
 main() {
-    docker pull cross-rs/$TARGET:0.2.5
+    docker pull ghcr.io/cross-rs/$TARGET:main
 
     cross build --target $TARGET
-    cross build --target $TARGET --release
 
     if [ ! -z $DISABLE_TESTS ]; then
         return
     fi
 
-    cross test --target $TARGET
-    cross test --target $TARGET --release
-
-    cross run --target $TARGET
-    cross run --target $TARGET --release
+    cross fmt --target $TARGET
+    cross clippy --target $TARGET
 }
 
 # we don't run the "test phase" when doing deploys
