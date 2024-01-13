@@ -3,8 +3,7 @@
 set -ex
 
 main() {
-    docker pull ghcr.io/cross-rs/$TARGET:main
-
+    set CROSS_CONTAINER_OPTS="--platform linux/amd64"
     cross build --target $TARGET
 
     if [ ! -z $DISABLE_TESTS ]; then
