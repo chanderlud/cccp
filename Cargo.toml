@@ -43,7 +43,7 @@ widestring = "1.0"
 prost-build = "0.12"
 
 [package.metadata.cross.target.aarch64-unknown-linux-gnu]
-pre-build = ["apt-get update && apt-get upgrade -y && apt-get install -y wget && wget http://security.ubuntu.com/ubuntu/pool/universe/p/protobuf/protobuf-compiler_3.12.4-1ubuntu7.22.04.1_amd64.deb && dpkg -i protobuf-compiler_3.12.4-1ubuntu7.22.04.1_amd64.deb"]
+pre-build = ["apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler"]
 
 [profile.release]
 opt-level = 3

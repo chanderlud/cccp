@@ -24,7 +24,7 @@ message Manifest {
 message FileDetail {
   string path = 1; // file path relative to the destination directory
   uint64 size = 2; // file size in bytes
-  optional bytes signature = 3; // blake3 hash of file
+  bytes signature = 3; // blake3 hash of file
   Crypto crypto = 4; // encryption details
 }
 
@@ -77,7 +77,7 @@ message End {
 message Failure {
   uint32 id = 1;
   uint32 reason = 2;
-  optional string description = 3;
+  string description = 3;
 }
 
 // signals the receiver that the sender won't start new transfers
