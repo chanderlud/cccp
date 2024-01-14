@@ -11,17 +11,13 @@ env:
 
 matrix:
   include:
-    - env: TARGET=x86_64-unknown-netbsd DISABLE_TESTS=1
-    - env: TARGET=mips-unknown-linux-musl
-    - env: TARGET=mipsel-unknown-linux-musl
-
     # OSX
     - env: TARGET=i686-apple-darwin
-      os: osx
     - env: TARGET=x86_64-apple-darwin
-      os: osx
     - env: TARGET=aarch64-apple-darwin
-      os: osx
+
+    - env: TARGET=mips-unknown-linux-musl
+    - env: TARGET=mipsel-unknown-linux-musl
 
     # Linux
     - env: TARGET=aarch64-unknown-linux-gnu
@@ -40,6 +36,7 @@ matrix:
     # *BSD
     - env: TARGET=i686-unknown-freebsd DISABLE_TESTS=1
     - env: TARGET=x86_64-unknown-freebsd DISABLE_TESTS=1
+    - env: TARGET=x86_64-unknown-netbsd DISABLE_TESTS=1
 
     # Windows
     - env: TARGET=x86_64-pc-windows-gnu
