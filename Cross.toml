@@ -1,10 +1,10 @@
 [target.aarch64-unknown-linux-gnu.dockerfile]
 file = "ci/LinuxDockerFile"
 
-[target.arm-unknown-linux-gnueabi.dockerfile]
+[target.aarch64-unknown-linux-musl.dockerfile]
 file = "ci/LinuxDockerFile"
 
-[target.arm-unknown-linux-gnueabihf.dockerfile]
+[target.arm-unknown-linux-gnueabi.dockerfile]
 file = "ci/LinuxDockerFile"
 
 [target.armv7-unknown-linux-gnueabihf.dockerfile]
@@ -13,38 +13,48 @@ file = "ci/LinuxDockerFile"
 [target.i686-unknown-linux-musl.dockerfile]
 file = "ci/LinuxDockerFile"
 
-[target.mips-unknown-linux-gnu.dockerfile]
-file = "ci/LinuxDockerFile"
+[target.mips-unknown-linux-musl]
+build-std = true
+dockerfile = "ci/LinuxDockerFile"
 
-[target.mips64-unknown-linux-gnuabi64.dockerfile]
-file = "ci/LinuxDockerFile"
+[target.mipsel-unknown-linux-musl]
+build-std = true
+dockerfile = "ci/LinuxDockerFile"
 
-[target.mips64el-unknown-linux-gnuabi64.dockerfile]
-file = "ci/DarwinDockerFile"
+[target.mips64-unknown-linux-gnuabi64]
+build-std = true
+dockerfile = "ci/LinuxDockerFile"
 
-[target.mipsel-unknown-linux-gnu.dockerfile]
-file = "ci/WindowsDockerFile"
+[target.mips64el-unknown-linux-gnuabi64]
+build-std = true
+dockerfile = "ci/LinuxDockerFile"
 
 [target.powerpc-unknown-linux-gnu.dockerfile]
-file = "ci/WindowsDockerFile"
+file = "ci/LinuxDockerFile"
 
 [target.powerpc64-unknown-linux-gnu.dockerfile]
-file = "ci/WindowsDockerFile"
+file = "ci/LinuxDockerFile"
 
 [target.powerpc64le-unknown-linux-gnu.dockerfile]
-file = "ci/WindowsDockerFile"
+file = "ci/LinuxDockerFile"
 
 [target.x86_64-unknown-linux-musl.dockerfile]
-file = "ci/WindowsDockerFile"
+file = "ci/LinuxDockerFile"
+
+[target.x86_64-unknown-linux-gnu.dockerfile]
+file = "ci/LinuxDockerFile"
 
 [target.x86_64-pc-windows-gnu.dockerfile]
-file = "ci/WindowsDockerFile"
+file = "ci/LinuxDockerFile"
+
+[target.i686-pc-windows-gnu.dockerfile]
+file = "ci/LinuxDockerFile"
 
 [target.i686-unknown-freebsd.dockerfile]
-file = "ci/WindowsDockerFile"
+file = "ci/LinuxDockerFile"
 
 [target.x86_64-unknown-freebsd.dockerfile]
-file = "ci/WindowsDockerFile"
+file = "ci/LinuxDockerFile"
 
 [target.x86_64-unknown-netbsd.dockerfile]
-file = "ci/WindowsDockerFile"
+file = "ci/LinuxDockerFile"
