@@ -39,7 +39,7 @@ enum Cipher {
   CHACHA8 = 1;
   AES128 = 2;
   AES192 = 3;
-  CHACHA20 = 43;
+  CHACHA20 = 4;
   AES256 = 5;
 }
 
