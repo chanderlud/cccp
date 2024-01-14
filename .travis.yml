@@ -11,14 +11,24 @@ env:
 
 matrix:
   include:
+    - env: TARGET=x86_64-unknown-netbsd DISABLE_TESTS=1
+    - env: TARGET=mips-unknown-linux-musl
+    - env: TARGET=mipsel-unknown-linux-musl
+
+    # OSX
+    - env: TARGET=i686-apple-darwin
+      os: osx
+    - env: TARGET=x86_64-apple-darwin
+      os: osx
+    - env: TARGET=aarch64-apple-darwin
+      os: osx
+
     # Linux
     - env: TARGET=aarch64-unknown-linux-gnu
     - env: TARGET=aarch64-unknown-linux-musl
     - env: TARGET=arm-unknown-linux-gnueabi
     - env: TARGET=armv7-unknown-linux-gnueabihf
     - env: TARGET=i686-unknown-linux-musl
-    - env: TARGET=mips-unknown-linux-musl
-    - env: TARGET=mipsel-unknown-linux-musl
     - env: TARGET=mips64-unknown-linux-gnuabi64
     - env: TARGET=mips64el-unknown-linux-gnuabi64
     - env: TARGET=powerpc-unknown-linux-gnu
@@ -27,18 +37,9 @@ matrix:
     - env: TARGET=x86_64-unknown-linux-musl
     - env: TARGET=x86_64-unknown-linux-gnu
 
-    # OSX
-    # - env: TARGET=i686-apple-darwin
-    #   os: osx
-    # - env: TARGET=x86_64-apple-darwin
-    #   os: osx
-    # - env: TARGET=aarch64-apple-darwin
-    #   os: osx
-
     # *BSD
     - env: TARGET=i686-unknown-freebsd DISABLE_TESTS=1
     - env: TARGET=x86_64-unknown-freebsd DISABLE_TESTS=1
-    - env: TARGET=x86_64-unknown-netbsd DISABLE_TESTS=1
 
     # Windows
     - env: TARGET=x86_64-pc-windows-gnu

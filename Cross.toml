@@ -1,17 +1,9 @@
-[target.aarch64-unknown-linux-gnu]
-
-[target.aarch64-unknown-linux-musl]
-
-[target.arm-unknown-linux-gnueabi]
-
-[target.armv7-unknown-linux-gnueabihf]
-
-[target.i686-unknown-linux-musl]
-
 [target.mips-unknown-linux-musl]
+pre-build = ["export RUSTFLAGS='-C opt-level=1'"]
 build-std = true
 
 [target.mipsel-unknown-linux-musl]
+pre-build = ["export RUSTFLAGS='-C opt-level=1'"]
 build-std = true
 
 [target.mips64-unknown-linux-gnuabi64]
@@ -20,22 +12,12 @@ build-std = true
 [target.mips64el-unknown-linux-gnuabi64]
 build-std = true
 
-[target.powerpc-unknown-linux-gnu]
-
-[target.powerpc64-unknown-linux-gnu]
-
-[target.powerpc64le-unknown-linux-gnu]
-
-[target.x86_64-unknown-linux-musl]
-
-[target.x86_64-unknown-linux-gnu]
-
-[target.x86_64-pc-windows-gnu]
-
-[target.i686-pc-windows-gnu]
-
-[target.i686-unknown-freebsd]
-
-[target.x86_64-unknown-freebsd]
-
 [target.x86_64-unknown-netbsd]
+pre-build = [
+    "mkdir -p /tmp/netbsd",
+    "curl https://cdn.netbsd.org/pub/NetBSD/NetBSD-9.2/amd64/binary/sets/base.tar.xz -O",
+    "tar -C /tmp/netbsd -xJf base.tar.xz",
+    "cp /tmp/netbsd/usr/lib/libexecinfo.so /usr/local/x86_64-unknown-netbsd/lib",
+    "rm base.tar.xz",
+    "rm -rf /tmp/netbsd",
+]
