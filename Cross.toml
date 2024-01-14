@@ -14,8 +14,8 @@ dockerfile = "ci/LinuxDockerFile"
 dockerfile = "ci/LinuxDockerFile"
 
 [target.mips-unknown-linux-musl]
-dockerfile = "ci/LinuxDockerFile"
 build-std = true
+dockerfile = "ci/LinuxDockerFile"
 
 [target.mipsel-unknown-linux-musl]
 dockerfile = "ci/LinuxDockerFile"
