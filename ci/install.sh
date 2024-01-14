@@ -30,7 +30,9 @@ main() {
     #         ;;
     # esac
 
-    cargo install cross --git https://github.com/cross-rs/cross
+    curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+
+    cargo binstall cross --git https://github.com/cross-rs/cross --no-confirm
 }
 
 main
