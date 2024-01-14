@@ -58,7 +58,7 @@ pub(crate) struct FileDetails {
     pub(crate) partial_path: PathBuf,
     pub(crate) size: u64,
     pub(crate) start_index: u64,
-    pub(crate) signature: Vec<u8>,
+    pub(crate) signature: Option<Vec<u8>>,
     pub(crate) crypto: Crypto,
 }
 
@@ -146,10 +146,10 @@ pub(crate) async fn writer(
     writer_queue.pop_queue(&details.id).await; // remove the queue
 
     // verify the signature if provided by the sender
-    if !details.signature.is_empty() {
+    if let Some(ref remote_signature) = details.signature {
         let local_hash = hash_file(&details.partial_path).await?; // hash the file
 
-        if local_hash.as_bytes() != &details.signature[..] {
+        if local_hash.as_bytes() != &remote_signature[..] {
             message_sender
                 .send(Message::failure(details.id, 0, None))
                 .await?; // notify the sender

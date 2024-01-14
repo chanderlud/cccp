@@ -281,7 +281,7 @@ async fn controller(
                 if active.remove(&failure.id).is_some() {
                     error!(
                         "remote writer failed {} [TRANSFER WILL NOT BE RETRIED]",
-                        failure.description
+                        failure.description.unwrap() // this should never be None
                     );
                 } else {
                     warn!(
@@ -321,7 +321,7 @@ async fn start_file_transfer(
     let start_index: StartIndex = control_stream.read_message().await?;
     total_data.fetch_sub(start_index.index as usize, Relaxed);
 
-    let cipher = details.crypto.as_ref().unwrap().make_cipher()?;
+    let cipher = details.crypto.make_cipher()?;
 
     tokio::spawn({
         let job_sender = job_sender.clone();
@@ -489,9 +489,9 @@ async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Res
 
             let signature = if options.verify {
                 let hash = hash_file(&file).await?;
-                hash.as_bytes().to_vec()
+                Some(hash.as_bytes().to_vec())
             } else {
-                Vec::new()
+                None
             };
 
             if file == options.source.file_path {
@@ -509,7 +509,7 @@ async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Res
                     path: format_dir(file.to_string_lossy()),
                     size,
                     signature,
-                    crypto: Some(crypto),
+                    crypto,
                 },
             ))
         })

@@ -119,7 +119,7 @@ pub(crate) async fn main(
                         size: details.size,
                         start_index,
                         signature: details.signature,
-                        crypto: details.crypto.unwrap_or_default(),
+                        crypto: details.crypto,
                     },
                 ))
             }
