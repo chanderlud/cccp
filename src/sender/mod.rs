@@ -281,7 +281,7 @@ async fn controller(
                 if active.remove(&failure.id).is_some() {
                     error!(
                         "remote writer failed {} [TRANSFER WILL NOT BE RETRIED]",
-                        failure.description.unwrap() // the description is always present for this failure reason
+                        failure.description
                     );
                 } else {
                     warn!(
@@ -489,9 +489,9 @@ async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Res
 
             let signature = if options.verify {
                 let hash = hash_file(&file).await?;
-                Some(hash.as_bytes().to_vec())
+                hash.as_bytes().to_vec()
             } else {
-                None
+                Vec::new()
             };
 
             if file == options.source.file_path {

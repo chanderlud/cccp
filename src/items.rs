@@ -41,7 +41,7 @@ impl Message {
             message: Some(message::Message::Failure(Failure {
                 id,
                 reason,
-                description,
+                description: description.unwrap_or_default(),
             })),
         }
     }
