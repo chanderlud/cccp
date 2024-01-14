@@ -1,4 +1,0 @@
-ARG CROSS_BASE_IMAGE
-FROM $CROSS_BASE_IMAGE
-
-RUN apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler
