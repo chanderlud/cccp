@@ -1,60 +1,41 @@
 [target.aarch64-unknown-linux-gnu]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.aarch64-unknown-linux-musl]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.arm-unknown-linux-gnueabi]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.armv7-unknown-linux-gnueabihf]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.i686-unknown-linux-musl]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.mips-unknown-linux-musl]
 build-std = true
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.mipsel-unknown-linux-musl]
 build-std = true
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.mips64-unknown-linux-gnuabi64]
 build-std = true
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.mips64el-unknown-linux-gnuabi64]
 build-std = true
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.powerpc-unknown-linux-gnu]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.powerpc64-unknown-linux-gnu]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.powerpc64le-unknown-linux-gnu]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.x86_64-unknown-linux-musl]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.x86_64-unknown-linux-gnu]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.x86_64-pc-windows-gnu]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.i686-pc-windows-gnu]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.i686-unknown-freebsd]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.x86_64-unknown-freebsd]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
 
 [target.x86_64-unknown-netbsd]
-pre-build = ["apt-get update", "apt-get upgrade -y", "apt-get install -y protobuf-compiler", "protoc --version"]
