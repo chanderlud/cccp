@@ -5,6 +5,8 @@ URL="https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-
 ZIP_FILE="protoc-25.2-linux-x86_64.zip"
 BIN_FOLDER="bin"
 
+apt-get install -y wget
+
 # Download the ZIP file
 wget $URL
 
