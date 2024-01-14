@@ -4,7 +4,19 @@ set -ex
 
 main() {
     cargo fmt -- --check
-    cross build --target $TARGET
+
+    case $TARGET in
+        # mips targets require opt-level 1 due to rust-lang/rust/issues/108835
+        mips-unknown-linux-musl)
+            cargo build --target $TARGET -- -C opt-level=1
+            ;;
+        mipsel-unknown-linux-musl)
+            cargo build --target $TARGET -- -C opt-level=1
+            ;;
+        *)
+            cross build --target $TARGET
+            ;;
+    esac
 
     if [ ! -z $DISABLE_TESTS ]; then
         return

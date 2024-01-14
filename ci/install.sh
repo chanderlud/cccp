@@ -1,15 +1,6 @@
 set -ex
 
 main() {
-    local target=
-    if [ $TRAVIS_OS_NAME = linux ]; then
-        target=x86_64-unknown-linux-musl
-        sort=sort
-    else
-        target=x86_64-apple-darwin
-        sort=gsort  # for `sort --sort-version`, from brew's coreutils.
-    fi
-
     # Builds for iOS are done on OSX, but require the specific target to be
     # installed.
     # case $TARGET in
@@ -30,8 +21,10 @@ main() {
     #         ;;
     # esac
 
+    # Install binstall
     curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
+    # Install cross w/ binstall
     cargo binstall cross --git https://github.com/cross-rs/cross --no-confirm
 }
 
