@@ -1,4 +1,4 @@
 ARG CROSS_BASE_IMAGE
 FROM $CROSS_BASE_IMAGE
 
-RUN ci/pre_build.sh
+RUN pre_build.sh
