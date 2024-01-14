@@ -42,8 +42,49 @@ widestring = "1.0"
 [build-dependencies]
 prost-build = "0.12"
 
+[package.metadata.cross]
+# linux definition
+common_pre_build = ["apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler"]
+
+# Apply the common hook to each target
 [package.metadata.cross.target.aarch64-unknown-linux-gnu]
-pre-build = ["apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler"]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.arm-unknown-linux-gnueabi]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.armv7-unknown-linux-gnueabihf]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.i686-unknown-linux-musl]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.mips-unknown-linux-gnu]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.mips64-unknown-linux-gnuabi64]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.mips64el-unknown-linux-gnuabi64]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.mipsel-unknown-linux-gnu]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.powerpc-unknown-linux-gnu]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.powerpc64-unknown-linux-gnu]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.powerpc64le-unknown-linux-gnu]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.s390x-unknown-linux-gnu]
+pre-build = ["${common_pre_build}"]
+
+[package.metadata.cross.target.x86_64-unknown-linux-gnu]
+pre-build = ["${common_pre_build}"]
 
 [profile.release]
 opt-level = 3

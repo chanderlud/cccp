@@ -39,7 +39,7 @@ enum Cipher {
   CHACHA8 = 1;
   AES128 = 2;
   AES192 = 3;
-  CHACHA20 =43;
+  CHACHA20 = 43;
   AES256 = 5;
 }
 
@@ -82,7 +82,7 @@ message Failure {
 
 // signals the receiver that the sender won't start new transfers
 message Done {
-    uint32 reason = 1;
+  uint32 reason = 1;
 }
 
 message Stats {
