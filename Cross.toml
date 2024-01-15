@@ -71,13 +71,16 @@ dockerfile = "ci/Dockerfile"
 image = "ghcr.io/cross-rs/i686-apple-darwin-cross:local"
 dockerfile = "ci/Dockerfile"
 build-std = true
+pre-build = ["rustup component add rust-src"]
 
 [target.x86_64-apple-darwin]
 image = "ghcr.io/cross-rs/x86_64-apple-darwin-cross:local"
 dockerfile = "ci/Dockerfile"
 build-std = true
+pre-build = ["rustup component add rust-src"]
 
 [target.aarch64-apple-darwin]
 image = "ghcr.io/cross-rs/aarch64-apple-darwin-cross:local"
 dockerfile = "ci/Dockerfile"
 build-std = true
+pre-build = ["rustup component add rust-src"]
