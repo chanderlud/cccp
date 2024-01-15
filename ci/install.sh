@@ -1,5 +1,3 @@
-#!/bin/bash
-
 set -ex
 
 main() {
@@ -10,12 +8,14 @@ main() {
     cargo binstall cross --git https://github.com/cross-rs/cross --no-confirm
 
     # macos targets require building a custom image
-    if [ "$TARGET" == *"darwin"* ]; then
-        git clone https://github.com/cross-rs/cross
-        cd cross
-        git submodule update --init --remote
-        cargo build-docker-image $TARGET-cross --tag local --build-arg 'MACOS_SDK_URL=https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11.3.sdk.tar.xz'
-    fi
+    case "$TARGET" in
+        *darwin*)
+            git clone https://github.com/cross-rs/cross
+            cd cross
+            git submodule update --init --remote
+            cargo build-docker-image $TARGET-cross --tag local --build-arg 'MACOS_SDK_URL=https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11.3.sdk.tar.xz'
+            ;;
+    esac
 }
 
 main
