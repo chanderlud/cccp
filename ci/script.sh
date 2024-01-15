@@ -8,10 +8,10 @@ main() {
     case $TARGET in
         # mips targets require opt-level 1 due to rust-lang/rust/issues/108835
         mips-unknown-linux-musl)
-            cross rustc --target $TARGET -- -C opt-level=1
+            cross rustc --target $TARGET -Z build-std=core,std,alloc,proc_macro -- -C opt-level=1
             ;;
         mipsel-unknown-linux-musl)
-            cross rustc --target $TARGET -- -C opt-level=1
+            cross rustc --target $TARGET -Z build-std=core,std,alloc,proc_macro -- -C opt-level=1
             ;;
         *)
             cross build --target $TARGET

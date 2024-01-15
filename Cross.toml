@@ -62,7 +62,7 @@ pre-build = [
 ]
 
 [target.x86_64-pc-windows-gnu]
-dockerfile = "ci/WindowsDockerFile"
+dockerfile = "ci/LinuxDockerFile"
 
 [target.i686-pc-windows-gnu]
-dockerfile = "ci/WindowsDockerFile"
+dockerfile = "ci/LinuxDockerFile"
