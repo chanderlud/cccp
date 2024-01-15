@@ -5,7 +5,17 @@ set -euxo pipefail
 main() {
     cargo fmt -- --check
 
-    if [ "$TARGET" = "mips-unknown-linux-musl" ] || [ "$TARGET" = "mipsel-unknown-linux-musl" ]; then
+    case "$TARGET" in
+      *darwin*)
+        $HOME/.cargo/bin/rustup component add rust-src
+
+        cross build --target $TARGET
+
+        [ -n "${DISABLE_TESTS:-}" ] && return
+
+        cross clippy --target $TARGET
+        ;;
+      "mips-unknown-linux-musl" | "mipsel-unknown-linux-musl")
         # MIPS targets require opt-level 1 due to a known issue in Rust
 
         RUSTFLAGS='-C opt-level=1' cross build --target $TARGET
@@ -13,13 +23,15 @@ main() {
         [ -n "${DISABLE_TESTS:-}" ] && return
 
         RUSTFLAGS='-C opt-level=1' cross clippy --target $TARGET
-    else
+        ;;
+      *)
         cross build --target $TARGET
 
         [ -n "${DISABLE_TESTS:-}" ] && return
 
         cross clippy --target $TARGET
-    fi
+        ;;
+    esac
 }
 
 # only run if not deploying
