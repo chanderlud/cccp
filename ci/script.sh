@@ -10,13 +10,13 @@ main() {
         RUSTFLAGS='-C opt-level=1'
         cross build --target $TARGET
 
-        [ -n "$DISABLE_TESTS" ] && return
+        [ -n "${DISABLE_TESTS:-}" ] && return
 
         cross clippy --target $TARGET
     else
         cross build --target $TARGET
 
-        [ -n "$DISABLE_TESTS" ] && return
+        [ -n "${DISABLE_TESTS:-}" ] && return
 
         cross clippy --target $TARGET
     fi
