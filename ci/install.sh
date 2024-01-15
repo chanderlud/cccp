@@ -8,7 +8,7 @@ main() {
     cargo binstall cross --git https://github.com/cross-rs/cross --no-confirm
 
     # macos targets require building a custom image
-    if [ $TARGET == *"darwin"* ]; then
+    if [ "$TARGET" == *"darwin"* ]; then
         git clone https://github.com/cross-rs/cross
         cd cross
         git submodule update --init --remote
