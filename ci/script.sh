@@ -1,43 +1,26 @@
-# This script takes care of testing your crate
+#!/bin/bash
 
-set -ex
+set -euxo pipefail
 
 main() {
     cargo fmt -- --check
 
-    case $TARGET in
-        # mips targets require opt-level 1 due to rust-lang/rust/issues/108835
-        mips-unknown-linux-musl)
-            RUSTFLAGS='-C opt-level=1' cross build --target $TARGET
+    if [ "$TARGET" = "mips-unknown-linux-musl" ] || [ "$TARGET" = "mipsel-unknown-linux-musl" ]; then
+        # MIPS targets require opt-level 1 due to a known issue in Rust
+        RUSTFLAGS='-C opt-level=1'
+        cross build --target $TARGET
 
-            if [ ! -z $DISABLE_TESTS ]; then
-                return
-            fi
+        [ -n "$DISABLE_TESTS" ] && return
 
-            RUSTFLAGS='-C opt-level=1' cross clippy --target $TARGET
-            ;;
-        mipsel-unknown-linux-musl)
-            RUSTFLAGS='-C opt-level=1' cross build --target $TARGET
+        cross clippy --target $TARGET
+    else
+        cross build --target $TARGET
 
-            if [ ! -z $DISABLE_TESTS ]; then
-                return
-            fi
+        [ -n "$DISABLE_TESTS" ] && return
 
-            RUSTFLAGS='-C opt-level=1' cross clippy --target $TARGET
-            ;;
-        *)
-            cross build --target $TARGET
-
-            if [ ! -z $DISABLE_TESTS ]; then
-                return
-            fi
-
-            cross clippy --target $TARGET
-            ;;
-    esac
+        cross clippy --target $TARGET
+    fi
 }
 
-# we don't run the "test phase" when doing deploys
-if [ -z $TRAVIS_TAG ]; then
-    main
-fi
+# only run if not deploying
+[ -z "$TRAVIS_TAG" ] && main
