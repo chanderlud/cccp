@@ -9,11 +9,11 @@ main() {
       *darwin*)
         $HOME/.cargo/bin/rustup component add rust-src
 
-        cross build --target $TARGET
+        cross build --target $TARGET -Z build-std
 
         [ -n "${DISABLE_TESTS:-}" ] && return
 
-        cross clippy --target $TARGET
+        cross clippy --target $TARGET -Z build-std
         ;;
       "mips-unknown-linux-musl" | "mipsel-unknown-linux-musl")
         # MIPS targets require opt-level 1 due to a known issue in Rust
