@@ -67,6 +67,15 @@ dockerfile = "ci/Dockerfile"
 [target.i686-unknown-linux-gnu]
 dockerfile = "ci/Dockerfile"
 
+[target.arm-unknown-linux-gnueabihf]
+dockerfile = "ci/Dockerfile"
+
+[target.arm-unknown-linux-musleabi]
+dockerfile = "ci/Dockerfile"
+
+[target.arm-unknown-linux-musleabihf]
+dockerfile = "ci/Dockerfile"
+
 [target.x86_64-pc-windows-gnu]
 dockerfile = "ci/Dockerfile"
 
