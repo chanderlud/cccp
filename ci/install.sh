@@ -13,7 +13,20 @@ main() {
             git clone https://github.com/cross-rs/cross
             cd cross
             git submodule update --init --remote
-            cargo build-docker-image $TARGET-cross --tag local --build-arg 'MACOS_SDK_URL=https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11.3.sdk.tar.xz'
+
+            case "$TARGET" in
+                x86_64-apple-darwin)
+                    MACOS_SDK_URL='MACOS_SDK_URL=https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11.3.sdk.tar.xz'
+                    ;;
+                aarch64-apple-darwin)
+                    MACOS_SDK_URL='MACOS_SDK_URL=https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11.3.sdk.tar.xz'
+                    ;;
+                i686-apple-darwin)
+                    MACOS_SDK_URL='MACOS_SDK_URL=https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX10.13.sdk.tar.xz'
+                    ;;
+            esac
+
+            cargo build-docker-image $TARGET-cross --tag local --build-arg MACOS_SDK_URL
             ;;
     esac
 }

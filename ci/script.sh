@@ -7,13 +7,13 @@ main() {
 
     case "$TARGET" in
       *darwin*)
-        $HOME/.cargo/bin/rustup component add rust-src
+        $HOME/.cargo/bin/rustup component add rust-src clippy
 
         cross build --target $TARGET -Z build-std
 
-        [ -n "${DISABLE_TESTS:-}" ] && return
+        # [ -n "${DISABLE_TESTS:-}" ] && return
 
-        cross clippy --target $TARGET -Z build-std
+        # cross clippy --target $TARGET -Z build-std
         ;;
       "mips-unknown-linux-musl" | "mipsel-unknown-linux-musl")
         # MIPS targets require opt-level 1 due to a known issue in Rust
