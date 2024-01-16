@@ -88,10 +88,18 @@ deploy:
   provider: releases
   cleanup: false
 
-cache: cargo
+cache:
+  directories:
+    - /var/lib/docker
+    - $HOME/.cargo
+
 before_cache:
-  # Travis can't cache files that are not readable by "others"
+  # travis can't cache files that are not readable by "others"
   - chmod -R a+r $HOME/.cargo
+  # clean up the cargo registry
+  - rm -rf $HOME/.cargo/registry/index
+  - rm -rf $HOME/.cargo/registry/cache
+  - rm -rf $HOME/.cargo/git/db
 
 branches:
   only:

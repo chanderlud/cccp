@@ -27,13 +27,13 @@ main() {
                     ;;
             esac
 
-            cargo build-docker-image $TARGET-cross --tag local --build-arg $MACOS_SDK_URL
+            cargo build-docker-image $TARGET-cross --tag local --build-arg $MACOS_SDK_URL --cache-from=$TARGET-cross:local
             ;;
         "aarch64-pc-windows-msvc" | "x86_64-pc-windows-msvc" | "i686-pc-windows-msvc")
             git clone https://github.com/cross-rs/cross
             cd cross
             git submodule update --init --remote
-            cargo build-docker-image $TARGET-cross --tag local
+            cargo build-docker-image $TARGET-cross --tag local --cache-from=$TARGET-cross:local
             ;;
     esac
 }
