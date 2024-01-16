@@ -11,6 +11,9 @@ env:
 
 matrix:
   include:
+    - env: TARGET=riscv64gc-unknown-linux-gnu
+    - env: TARGET=i686-unknown-linux-gnu
+
     # OSX
     # - env: TARGET=i686-apple-darwin
     - env: TARGET=x86_64-apple-darwin # no tests

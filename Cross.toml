@@ -61,6 +61,12 @@ pre-build = [
     "rm -rf /tmp/netbsd",
 ]
 
+[target.riscv64gc-unknown-linux-gnu]
+dockerfile = "ci/Dockerfile"
+
+[target.i686-unknown-linux-gnu]
+dockerfile = "ci/Dockerfile"
+
 [target.x86_64-pc-windows-gnu]
 dockerfile = "ci/Dockerfile"
 
