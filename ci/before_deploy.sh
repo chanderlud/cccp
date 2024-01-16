@@ -12,7 +12,7 @@ main() {
         *darwin*)
             $HOME/.cargo/bin/rustup component add rust-src
 
-            cross rustc --target $TARGET --release -Z build-std=core,std,alloc,proc_macro -- -C lto
+            cross rustc --target $TARGET --release -- -C lto
             cp target/$TARGET/release/cccp $stage/
             ;;
         *windows*)
