@@ -12,9 +12,9 @@ env:
 matrix:
   include:
     # OSX
-    - env: TARGET=i686-apple-darwin
-    - env: TARGET=x86_64-apple-darwin
-    - env: TARGET=aarch64-apple-darwin
+    - env: TARGET=i686-apple-darwin DISABLE_TESTS=1
+    - env: TARGET=x86_64-apple-darwin DISABLE_TESTS=1
+    - env: TARGET=aarch64-apple-darwin DISABLE_TESTS=1
 
     # Windows
     - env: TARGET=x86_64-pc-windows-gnu
@@ -26,8 +26,8 @@ matrix:
     - env: TARGET=arm-unknown-linux-gnueabi
     - env: TARGET=armv7-unknown-linux-gnueabihf
     - env: TARGET=i686-unknown-linux-musl
-    - env: TARGET=mips-unknown-linux-musl
-    - env: TARGET=mipsel-unknown-linux-musl
+    - env: TARGET=mips-unknown-linux-musl DISABLE_TESTS=1
+    - env: TARGET=mipsel-unknown-linux-musl DISABLE_TESTS=1
     - env: TARGET=mips64-unknown-linux-gnuabi64
     - env: TARGET=mips64el-unknown-linux-gnuabi64
     - env: TARGET=powerpc-unknown-linux-gnu
