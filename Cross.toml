@@ -1,57 +1,16 @@
-[target.aarch64-unknown-linux-gnu]
-dockerfile = "ci/Dockerfile"
-
-[target.aarch64-unknown-linux-musl]
-dockerfile = "ci/Dockerfile"
-
-[target.arm-unknown-linux-gnueabi]
-dockerfile = "ci/Dockerfile"
-
-[target.armv7-unknown-linux-gnueabihf]
-dockerfile = "ci/Dockerfile"
-
-[target.i686-unknown-linux-musl]
-dockerfile = "ci/Dockerfile"
-
 [target.mips-unknown-linux-musl]
-dockerfile = "ci/Dockerfile"
 build-std = true
 
 [target.mipsel-unknown-linux-musl]
-dockerfile = "ci/Dockerfile"
 build-std = true
 
 [target.mips64-unknown-linux-gnuabi64]
-dockerfile = "ci/Dockerfile"
 build-std = true
 
 [target.mips64el-unknown-linux-gnuabi64]
-dockerfile = "ci/Dockerfile"
 build-std = true
 
-[target.powerpc-unknown-linux-gnu]
-dockerfile = "ci/Dockerfile"
-
-[target.powerpc64-unknown-linux-gnu]
-dockerfile = "ci/Dockerfile"
-
-[target.powerpc64le-unknown-linux-gnu]
-dockerfile = "ci/Dockerfile"
-
-[target.x86_64-unknown-linux-musl]
-dockerfile = "ci/Dockerfile"
-
-[target.x86_64-unknown-linux-gnu]
-dockerfile = "ci/Dockerfile"
-
-[target.i686-unknown-freebsd]
-dockerfile = "ci/Dockerfile"
-
-[target.x86_64-unknown-freebsd]
-dockerfile = "ci/Dockerfile"
-
 [target.x86_64-unknown-netbsd]
-dockerfile = "ci/Dockerfile"
 pre-build = [
     "mkdir -p /tmp/netbsd",
     "curl https://cdn.netbsd.org/pub/NetBSD/NetBSD-9.2/amd64/binary/sets/base.tar.xz -O",
@@ -61,23 +20,11 @@ pre-build = [
     "rm -rf /tmp/netbsd",
 ]
 
-[target.x86_64-pc-windows-gnu]
-dockerfile = "ci/Dockerfile"
-
-[target.i686-pc-windows-gnu]
-dockerfile = "ci/Dockerfile"
-
 [target.i686-apple-darwin]
 image = "ghcr.io/cross-rs/i686-apple-darwin-cross:local"
-dockerfile = "ci/Dockerfile"
-build-std = true
 
 [target.x86_64-apple-darwin]
 image = "ghcr.io/cross-rs/x86_64-apple-darwin-cross:local"
-dockerfile = "ci/Dockerfile"
-build-std = true
 
 [target.aarch64-apple-darwin]
 image = "ghcr.io/cross-rs/aarch64-apple-darwin-cross:local"
-dockerfile = "ci/Dockerfile"
-build-std = true
