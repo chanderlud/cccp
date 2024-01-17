@@ -82,19 +82,19 @@ deploy:
   file_glob: true
   file: $CRATE_NAME-$TRAVIS_TAG-$TARGET.*
   on:
-    condition: $TRAVIS_RUST_VERSION = nightly
     tags: true
   provider: releases
   cleanup: false
 
 cache:
   directories:
-    - /var/lib/docker
+    - /var/lib/docker/containers
     - $HOME/.cargo
 
 before_cache:
   # travis can't cache files that are not readable by "others"
   - chmod -R a+r $HOME/.cargo
+  - chmod -R a+r /var/lib/docker/containers
   # clean up the cargo registry
   - rm -rf $HOME/.cargo/registry/index
   - rm -rf $HOME/.cargo/registry/cache
