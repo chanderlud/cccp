@@ -14,9 +14,9 @@ matrix:
     # Windows
     - env: TARGET=x86_64-pc-windows-gnu ENABLE_TESTS=1
     - env: TARGET=i686-pc-windows-gnu
-    - env: TARGET=x86_64-pc-windows-msvc
-    - env: TARGET=i686-pc-windows-msvc
-    - env: TARGET=aarch64-pc-windows-msvc
+    - env: TARGET=x86_64-pc-windows-msvc CUSTOM_IMAGE=1
+    - env: TARGET=i686-pc-windows-msvc CUSTOM_IMAGE=1
+    - env: TARGET=aarch64-pc-windows-msvc CUSTOM_IMAGE=1
 
     # Linux
     - env: TARGET=aarch64-unknown-linux-gnu
@@ -42,8 +42,8 @@ matrix:
 
     # OSX
     # - env: TARGET=i686-apple-darwin
-    - env: TARGET=x86_64-apple-darwin
-    - env: TARGET=aarch64-apple-darwin
+    - env: TARGET=x86_64-apple-darwin CUSTOM_IMAGE=1
+    - env: TARGET=aarch64-apple-darwin CUSTOM_IMAGE=1
 
     # *BSD
     - env: TARGET=i686-unknown-freebsd
@@ -63,7 +63,10 @@ before_install:
   - set -e
   - rustup self update
   - rustup component add rustfmt
-  # - if [[ -d $HOME/docker ]]; then ls $HOME/docker/*.tar.gz | xargs -I {file} sh -c "zcat {file} | docker load"; fi
+  # load docker images from cache if needed
+  - if [ ! -z "$CUSTOM_IMAGE" ]; then
+      docker load -i "docker_images/${TARGET}.tar" || true;
+    fi
 
 install:
   - source ~/.cargo/env || true
@@ -85,12 +88,12 @@ deploy:
   on:
     tags: true
   provider: releases
-  cleanup: false
+  skip_cleanup: true
+  draft: true
 
 cache:
-  bundler: true
   directories:
-    - $HOME/docker
+    - $HOME/docker_images
     - $HOME/.cargo
 
 before_cache:
@@ -100,9 +103,10 @@ before_cache:
   - rm -rf $HOME/.cargo/registry/index
   - rm -rf $HOME/.cargo/registry/cache
   - rm -rf $HOME/.cargo/git/db
-  # - >
-  #   mkdir -p $HOME/docker && docker images -a --filter='dangling=false' --format '{{.Repository}}:{{.Tag}} {{.ID}}'
-  #   | xargs -n 2 -t sh -c 'test -e $HOME/docker/$1.tar.gz || docker save $0 | gzip -2 > $HOME/docker/$1.tar.gz'
+  # save docker images
+  - if [ ! -z "$CUSTOM_IMAGE" ]; then
+      docker save -o "docker_images/${TARGET}.tar" "$TARGET";
+    fi
 
 branches:
   only:
