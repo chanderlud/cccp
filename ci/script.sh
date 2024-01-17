@@ -18,9 +18,9 @@ main() {
         *)
             cross build --target $TARGET
 
-            [ -n "${DISABLE_TESTS:-}" ] && return
-
-            cross clippy --target $TARGET
+            if [ "${ENABLE_TESTS:-0}" = "1" ]; then
+                cross clippy --target $TARGET
+            fi
             ;;
     esac
 }
