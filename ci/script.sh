@@ -26,4 +26,6 @@ main() {
 }
 
 # only run if not deploying
-[ -z "$TRAVIS_TAG" ] && main
+if [ -z $TRAVIS_TAG ]; then
+    main
+fi
