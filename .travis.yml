@@ -63,6 +63,7 @@ before_install:
   - set -e
   - rustup self update
   - rustup component add rustfmt
+  - if [[ -d $HOME/docker ]]; then ls $HOME/docker/*.tar.gz | xargs -I {file} sh -c "zcat {file} | docker load"; fi
 
 install:
   - source ~/.cargo/env || true
@@ -87,18 +88,21 @@ deploy:
   cleanup: false
 
 cache:
+  bundler: true
   directories:
-    - /var/lib/docker/containers
+    - $HOME/docker
     - $HOME/.cargo
 
 before_cache:
   # travis can't cache files that are not readable by "others"
   - chmod -R a+r $HOME/.cargo
-  - chmod -R a+r /var/lib/docker/containers
   # clean up the cargo registry
   - rm -rf $HOME/.cargo/registry/index
   - rm -rf $HOME/.cargo/registry/cache
   - rm -rf $HOME/.cargo/git/db
+  - >
+    mkdir -p $HOME/docker && docker images -a --filter='dangling=false' --format '{{.Repository}}:{{.Tag}} {{.ID}}'
+    | xargs -n 2 -t sh -c 'test -e $HOME/docker/$1.tar.gz || docker save $0 | gzip -2 > $HOME/docker/$1.tar.gz'
 
 branches:
   only:
