@@ -46,6 +46,7 @@ pub(crate) enum ErrorKind {
     CommandNotFound,
     /// the command failed with a non-zero exit status
     CommandFailed(u32),
+    UnknownOs((String, String)),
 }
 
 impl From<io::Error> for Error {
@@ -196,6 +197,9 @@ impl std::fmt::Display for Error {
             ErrorKind::CommandFailed(ref status) => {
                 write!(f, "command failed with status {}", status)
             }
+            ErrorKind::UnknownOs((ref stdout, ref stderr)) => {
+                write!(f, "unknown os {} | {}", stdout, stderr)
+            }
         }
     }
 }
@@ -252,6 +256,12 @@ impl Error {
     pub(crate) fn command_failed(status: u32) -> Self {
         Self {
             kind: ErrorKind::CommandFailed(status),
+        }
+    }
+
+    pub(crate) fn unknown_os(stdout: String, stderr: String) -> Self {
+        Self {
+            kind: ErrorKind::UnknownOs((stdout, stderr)),
         }
     }
 

@@ -8,7 +8,7 @@ use std::str::FromStr;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
 use base64::Engine;
 use bytesize::ByteSize;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use log::LevelFilter;
 use regex::Regex;
 use tokio::io;
@@ -38,8 +38,29 @@ const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
   - The first two ports are used for TCP streams which carry control messages
   - The remaining ports are UDP sockets which carry data";
 
+const TRANSFER_HEADING: &str = "\x1B[1m\x1B[4mNote:\x1B[0m using the \x1B[1mtransfer\x1B[0m command is equivalent to using no command at all";
+
 #[derive(Parser)]
 #[clap(version, about = HELP_HEADING)]
+#[command(propagate_version = true)]
+pub(crate) struct Cli {
+    #[command(subcommand)]
+    pub(crate) command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum Commands {
+    /// Run `transfer --help` for more options
+    #[clap(about = TRANSFER_HEADING)]
+    Transfer(Box<Options>),
+    /// Install cccp on a remote host
+    Install {
+        /// IoSpec for the remote host & install location
+        remote: IoSpec,
+    },
+}
+
+#[derive(Parser)]
 pub(crate) struct Options {
     // the user does not need to set this
     #[clap(long, hide = true, default_value = "l")]
@@ -130,11 +151,9 @@ pub(crate) struct Options {
     pub(crate) log_file: Option<PathBuf>,
 
     /// Source IoSpec (InSpec)
-    #[clap()]
     pub(crate) source: IoSpec,
 
     /// Destination IoSpec (OutSpec)
-    #[clap()]
     pub(crate) destination: IoSpec,
 }
 

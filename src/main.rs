@@ -32,10 +32,11 @@ use crate::cipher::CipherStream;
 use crate::error::Error;
 use crate::items::Stats;
 
-use crate::options::{Mode, Options, SetupMode};
+use crate::options::{Cli, Commands, Mode, Options, SetupMode};
 
 mod cipher;
 mod error;
+mod install;
 mod items;
 mod options;
 mod receiver;
@@ -107,7 +108,35 @@ impl TransferStats {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut options = Options::parse();
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Commands::Transfer(options)) => transfer(*options).await,
+        Some(Commands::Install { remote }) => {
+            if let Some(host) = remote.host {
+                let client = connect_client(host, &remote.username).await?;
+                install::installer(client).await
+            } else {
+                let mut command = Cli::command();
+
+                command
+                    .error(
+                        clap::error::ErrorKind::ValueValidation,
+                        "host must be specified",
+                    )
+                    .exit();
+            }
+        }
+        None => {
+            // if no command is specified, run a transfer
+            let options = Options::parse();
+            transfer(options).await
+        }
+    }
+}
+
+/// runs a transfer
+async fn transfer(mut options: Options) -> Result<()> {
     let mut command = Options::command();
 
     let signal = Arc::new(Notify::new());
@@ -260,7 +289,7 @@ async fn main() -> Result<()> {
                 // sender -> receiver stream
                 let str = connect_stream(remote_ip, &mut options).await?;
 
-                run_main(sender, options, &stats, rts, str, remote_ip, signal).await
+                run_transfer(sender, options, &stats, rts, str, remote_ip, signal).await
             };
 
             select! {
@@ -289,7 +318,7 @@ async fn main() -> Result<()> {
                     let (rts, addr) = listen_stream(&mut options).await?;
                     let (str, _) = listen_stream(&mut options).await?;
 
-                    run_main(sender, options, &stats, rts, str, addr, signal).await?;
+                    run_transfer(sender, options, &stats, rts, str, addr, signal).await?;
                 }
                 // remote clients only use connect mode for remote -> remote transfers where the source is always in connect mode
                 SetupMode::Connect => {
@@ -299,7 +328,7 @@ async fn main() -> Result<()> {
                     let rts = connect_stream(addr, &mut options).await?;
                     let str = connect_stream(addr, &mut options).await?;
 
-                    run_main(sender, options, &stats, rts, str, addr, signal).await?;
+                    run_transfer(sender, options, &stats, rts, str, addr, signal).await?;
                 }
             }
 
@@ -358,9 +387,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// selects the main function to run based on the mode
+/// selects the function to run based on the mode
 #[inline]
-async fn run_main(
+async fn run_transfer(
     sender: bool,
     options: Options,
     stats: &TransferStats,
