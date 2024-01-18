@@ -65,7 +65,7 @@ before_install:
   - rustup component add rustfmt
   # load docker images from cache if needed
   - if [ ! -z "$CUSTOM_IMAGE" ]; then
-      docker load -i "${HOME}/docker_images/${TARGET}.tar" || true;
+      docker load -i "${HOME}/docker_images/${TARGET}-cross.tar" || true;
     fi
 
 install:
@@ -105,7 +105,7 @@ before_cache:
   - rm -rf $HOME/.cargo/git/db
   # save docker images
   - if [ ! -z "$CUSTOM_IMAGE" ]; then
-      docker save -o "${HOME}/docker_images/${TARGET}.tar" "$TARGET";
+      docker save -o "${HOME}/docker_images/${TARGET}-cross.tar" "$TARGET-cross";
     fi
 
 branches:
