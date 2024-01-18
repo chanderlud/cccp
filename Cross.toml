@@ -88,23 +88,23 @@ dockerfile = "ci/Dockerfile"
 # build-std = true
 
 [target.x86_64-apple-darwin]
-image = "ghcr.io/cross-rs/x86_64-apple-darwin-cross:local"
+image = "chanderlud/cccp:x86_64-apple-darwin"
 dockerfile = "ci/Dockerfile"
 build-std = true
 
 [target.aarch64-apple-darwin]
-image = "ghcr.io/cross-rs/aarch64-apple-darwin-cross:local"
+image = "chanderlud/cccp:aarch64-apple-darwin"
 dockerfile = "ci/Dockerfile"
 build-std = true
 
 [target.x86_64-pc-windows-msvc]
-image = "ghcr.io/cross-rs/x86_64-pc-windows-msvc-cross:local"
+image = "chanderlud/cccp:x86_64-pc-windows-msvc"
 dockerfile = "ci/Dockerfile"
 
 [target.i686-pc-windows-msvc]
-image = "ghcr.io/cross-rs/i686-pc-windows-msvc-cross:local"
+image = "chanderlud/cccp:i686-pc-windows-msvc"
 dockerfile = "ci/Dockerfile"
 
 [target.aarch64-pc-windows-msvc]
-image = "ghcr.io/cross-rs/aarch64-pc-windows-msvc-cross:local"
+image = "chanderlud/cccp:aarch64-pc-windows-msvc"
 dockerfile = "ci/Dockerfile"
