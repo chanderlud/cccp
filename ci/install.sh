@@ -12,7 +12,7 @@ main() {
     # these targets require building a custom image
     case "$TARGET" in
         *darwin*)
-            IMAGE_NAME="$TARGET-cross:local"
+            IMAGE_NAME="ghcr.io/cross-rs/$TARGET-cross:local"
             if ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1; then
                 git clone https://github.com/cross-rs/cross
                 cd cross
@@ -35,7 +35,7 @@ main() {
             fi
             ;;
         "aarch64-pc-windows-msvc" | "x86_64-pc-windows-msvc" | "i686-pc-windows-msvc")
-            IMAGE_NAME="$TARGET-cross:local"
+            IMAGE_NAME="ghcr.io/cross-rs/$TARGET-cross:local"
             if ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1; then
                 git clone https://github.com/cross-rs/cross
                 cd cross
