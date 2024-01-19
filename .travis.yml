@@ -12,6 +12,13 @@ env:
 
 jobs:
   include:
+    - if: tag IS present
+      env: TARGET=aarch64-pc-windows-msvc
+    - if: tag IS present
+      env: TARGET=mips-unknown-linux-musl
+    - if: tag IS present
+      env: TARGET=mips64-unknown-linux-gnuabi64
+
     # OSX
     # - env: TARGET=i686-apple-darwin
     - env: TARGET=x86_64-apple-darwin
@@ -26,8 +33,6 @@ jobs:
       env: TARGET=x86_64-pc-windows-msvc
     - if: tag IS present
       env: TARGET=i686-pc-windows-msvc
-    - if: tag IS present
-      env: TARGET=aarch64-pc-windows-msvc
 
     # Linux
     - if: tag IS present
@@ -47,11 +52,7 @@ jobs:
     - if: tag IS present
       env: TARGET=i686-unknown-linux-musl
     - if: tag IS present
-      env: TARGET=mips-unknown-linux-musl
-    - if: tag IS present
       env: TARGET=mipsel-unknown-linux-musl
-    - if: tag IS present
-      env: TARGET=mips64-unknown-linux-gnuabi64
     - if: tag IS present
       env: TARGET=mips64el-unknown-linux-gnuabi64
     - if: tag IS present

@@ -14,7 +14,14 @@ main() {
             ;;
     esac
 
-    cross build --target $TARGET --release
+    case $TARGET in
+        "aarch64-pc-windows-msvc" | "mips-unknown-linux-musl" | "mips64-unknown-linux-gnuabi64")
+            RUSTFLAGS='-C opt-level=2' cross build --target $TARGET --release
+            ;;
+        *)
+            cross build --target $TARGET --release
+            ;;
+    esac
 
     if [[ -f "target/${TARGET}/release/${CRATE_NAME}.exe" ]]; then
         mv "target/${TARGET}/release/${CRATE_NAME}.exe" "${STAGE}/"
