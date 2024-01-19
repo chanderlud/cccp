@@ -112,7 +112,7 @@ deploy:
   on:
     tags: true
   provider: releases
-  cleanup: false
+  skip_cleanup: true
   draft: true
 
 cache: cargo
