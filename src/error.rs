@@ -30,6 +30,8 @@ pub(crate) enum ErrorKind {
     AsyncSsh(async_ssh2_tokio::Error),
     RuSsh(russh::Error),
     Base64Decode(base64::DecodeError),
+    Octocrab(octocrab::Error),
+    Sftp(russh_sftp::client::error::Error),
     MissingQueue,
     MaxRetries,
     #[cfg(windows)]
@@ -46,7 +48,12 @@ pub(crate) enum ErrorKind {
     CommandNotFound,
     /// the command failed with a non-zero exit status
     CommandFailed(u32),
+    /// os identification failed on the remote host
     UnknownOs((String, String)),
+    /// no suitable release was found on github
+    NoSuitableRelease,
+    /// the file was not found in the archive
+    FileNotFound,
 }
 
 impl From<io::Error> for Error {
@@ -163,6 +170,22 @@ impl From<base64::DecodeError> for Error {
     }
 }
 
+impl From<octocrab::Error> for Error {
+    fn from(error: octocrab::Error) -> Self {
+        Self {
+            kind: ErrorKind::Octocrab(error),
+        }
+    }
+}
+
+impl From<russh_sftp::client::error::Error> for Error {
+    fn from(error: russh_sftp::client::error::Error) -> Self {
+        Self {
+            kind: ErrorKind::Sftp(error),
+        }
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
@@ -175,17 +198,19 @@ impl std::fmt::Display for Error {
             ErrorKind::Acquire(ref error) => write!(f, "Acquire error: {}", error),
             ErrorKind::TryFromSlice(ref error) => write!(f, "TryFromSlice error: {}", error),
             #[cfg(windows)]
-            ErrorKind::ContainsNull(ref error) => write!(f, "ContainsNull error: {}", error),
+            ErrorKind::ContainsNull(ref error) => write!(f, "contains null error: {}", error),
             #[cfg(unix)]
-            ErrorKind::Nix(ref error) => write!(f, "Nix error: {}", error),
-            ErrorKind::StripPrefix(ref error) => write!(f, "StripPrefix error: {}", error),
-            ErrorKind::AsyncSsh(ref error) => write!(f, "SSH error: {}", error),
-            ErrorKind::RuSsh(ref error) => write!(f, "SSH error: {}", error),
-            ErrorKind::Base64Decode(ref error) => write!(f, "Base64 decode error: {}", error),
-            ErrorKind::MissingQueue => write!(f, "Missing queue"),
-            ErrorKind::MaxRetries => write!(f, "Max retries"),
+            ErrorKind::Nix(ref error) => write!(f, "nix error: {}", error),
+            ErrorKind::StripPrefix(ref error) => write!(f, "strip prefix error: {}", error),
+            ErrorKind::AsyncSsh(ref error) => write!(f, "ssh error: {}", error),
+            ErrorKind::RuSsh(ref error) => write!(f, "ssh error: {}", error),
+            ErrorKind::Base64Decode(ref error) => write!(f, "base64 decode error: {}", error),
+            ErrorKind::Octocrab(ref error) => write!(f, "octocrab error: {}", error),
+            ErrorKind::Sftp(ref error) => write!(f, "sftp error: {}", error),
+            ErrorKind::MissingQueue => write!(f, "missing queue"),
+            ErrorKind::MaxRetries => write!(f, "max retries"),
             #[cfg(windows)]
-            ErrorKind::StatusError => write!(f, "Status error"),
+            ErrorKind::StatusError => write!(f, "status error"),
             ErrorKind::Failure(ref reason) => write!(f, "failure: {}", reason),
             ErrorKind::EmptyPath => write!(f, "empty path"),
             ErrorKind::InvalidExtension => write!(f, "invalid extension"),
@@ -200,6 +225,10 @@ impl std::fmt::Display for Error {
             ErrorKind::UnknownOs((ref stdout, ref stderr)) => {
                 write!(f, "unknown os {} | {}", stdout, stderr)
             }
+            ErrorKind::NoSuitableRelease => {
+                write!(f, "no suitable release for target, use --custom-binary")
+            }
+            ErrorKind::FileNotFound => write!(f, "file not found"),
         }
     }
 }
@@ -262,6 +291,18 @@ impl Error {
     pub(crate) fn unknown_os(stdout: String, stderr: String) -> Self {
         Self {
             kind: ErrorKind::UnknownOs((stdout, stderr)),
+        }
+    }
+
+    pub(crate) fn no_suitable_release() -> Self {
+        Self {
+            kind: ErrorKind::NoSuitableRelease,
+        }
+    }
+
+    pub(crate) fn file_not_found() -> Self {
+        Self {
+            kind: ErrorKind::FileNotFound,
         }
     }
 

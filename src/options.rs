@@ -40,6 +40,11 @@ const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
 
 const TRANSFER_HEADING: &str = "\x1B[1m\x1B[4mNote:\x1B[0m using the \x1B[1mtransfer\x1B[0m command is equivalent to using no command at all";
 
+const INSTALL_HEADING: &str = "\x1B[1m\x1B[4mInstallation Tips\x1B[0m
+  - The installation location should be in path. Alternatively, pass the absolute path to the `command` transfer argument
+  - The filename should be included in the destionation IoSpec (/usr/bin/\x1B[4m\x1B[1mcccp\x1B[0m)
+  - /bin/cccp or /usr/bin/cccp are be good choices on Unix";
+
 #[derive(Parser)]
 #[clap(version, about = HELP_HEADING)]
 #[command(propagate_version = true)]
@@ -54,10 +59,8 @@ pub(crate) enum Commands {
     #[clap(about = TRANSFER_HEADING)]
     Transfer(Box<Options>),
     /// Install cccp on a remote host
-    Install {
-        /// IoSpec for the remote host & install location
-        remote: IoSpec,
-    },
+    #[clap(about = INSTALL_HEADING)]
+    Install(Box<InstallOptions>),
 }
 
 #[derive(Parser)]
@@ -161,7 +164,7 @@ impl Options {
     /// Returns the command to run on the remote host
     pub(crate) fn format_command(&self, sender: bool, mode: SetupMode) -> String {
         let mut arguments = vec![
-            self.command.clone(),
+            format!("\"{}\"", self.command),
             format!("--mode {}", if sender { "rr" } else { "rs" }),
             format!("--stream-setup-mode {}", mode),
             format!("-s {}", self.start_port),
@@ -208,6 +211,20 @@ impl Options {
     pub(crate) fn pps(&self) -> u64 {
         self.rate.0 / PACKET_SIZE as u64
     }
+}
+
+#[derive(Parser)]
+pub(crate) struct InstallOptions {
+    /// IoSpec for the remote host & install location
+    pub(crate) destination: IoSpec,
+
+    /// Log level [debug, info, warn, error]
+    #[clap(short, long, default_value = "warn")]
+    pub(crate) log_level: LevelFilter,
+
+    /// Use a custom binary instead of downloading from Github
+    #[clap(short, long)]
+    pub(crate) custom_binary: Option<PathBuf>,
 }
 
 #[derive(Clone, PartialEq)]

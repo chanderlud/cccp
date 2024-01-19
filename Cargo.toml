@@ -15,6 +15,7 @@ futures = "0.3"
 log = { version = "0.4", features = ["std"] }
 async-ssh2-tokio = "0.8.5"
 russh = "0.40"
+russh-sftp = "2.0.0-beta.4"
 simple-logging = "2.0"
 regex = "1.10"
 dirs = "5.0"
@@ -31,6 +32,10 @@ aes = "0.8"
 whoami = "1.4"
 cipher = "0.4"
 rand = "0.8"
+octocrab = "0.33"
+async-compression = { version = "0.4", features = ["futures-io", "gzip"] }
+tar = "0.4"
+semver = "1.0"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["fs"] }

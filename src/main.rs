@@ -112,10 +112,13 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Transfer(options)) => transfer(*options).await,
-        Some(Commands::Install { remote }) => {
-            if let Some(host) = remote.host {
-                let client = connect_client(host, &remote.username).await?;
-                install::installer(client).await
+        Some(Commands::Install(options)) => {
+            log_to_stderr(options.log_level);
+
+            if let Some(host) = options.destination.host {
+                let client = connect_client(host, &options.destination.username).await?;
+                install::installer(client, options.destination.file_path, options.custom_binary)
+                    .await
             } else {
                 let mut command = Cli::command();
 
