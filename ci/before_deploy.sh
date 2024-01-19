@@ -15,8 +15,9 @@ main() {
     esac
 
     case $TARGET in
+        # these targets fail on opt level 3
         "aarch64-pc-windows-msvc" | "mips-unknown-linux-musl" | "mips64-unknown-linux-gnuabi64")
-            RUSTFLAGS='-C opt-level=2' cross build --target $TARGET --release
+            cross build --target $TARGET --profile opt-level-2
             ;;
         *)
             cross build --target $TARGET --release
