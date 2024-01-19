@@ -16,10 +16,10 @@ main() {
 
     cross build --target $TARGET --release
 
-    if [[ -f "target/${TARGET}/release/cccp.exe" ]]; then
-        mv "target/${TARGET}/release/cccp.exe" "${STAGE}/"
+    if [[ -f "target/${TARGET}/release/${CRATE_NAME}.exe" ]]; then
+        mv "target/${TARGET}/release/${CRATE_NAME}.exe" "${STAGE}/"
     else
-        mv "target/${TARGET}/release/cccp" "${STAGE}/"
+        mv "target/${TARGET}/release/${CRATE_NAME}" "${STAGE}/"
     fi
 
     cd $STAGE
