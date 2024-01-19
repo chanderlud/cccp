@@ -12,11 +12,11 @@ env:
 
 jobs:
   include:
-    - if: tag IS present
+    - # if: tag IS present
       env: TARGET=aarch64-pc-windows-msvc
-    - if: tag IS present
+    - # if: tag IS present
       env: TARGET=mips-unknown-linux-musl
-    - if: tag IS present
+    - # if: tag IS present
       env: TARGET=mips64-unknown-linux-gnuabi64
 
     # OSX
