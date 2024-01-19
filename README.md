@@ -71,5 +71,11 @@ Options:
 -d, --directory                              Forces the destination to be a directory  
 -L, --log-file <LOG_FILE>                    Log to a file (default: stderr / local only)  
 -h, --help                                   Print help  
--V, --version                                Print version  
-```
+-V, --version                                Print version
+```  
+## Roadmap
+- [ ] Add tests
+- [ ] Optimize dependency tree
+- [ ] Add further precompiled targets
+- [ ] Add chained ciphers
+- [ ] Add a command to check for updates
