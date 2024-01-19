@@ -13,7 +13,10 @@ main() {
             ;;
         "mips-unknown-linux-musl" | "mipsel-unknown-linux-musl")
             # MIPS targets require opt-level 1 due to a known issue in Rust
-            RUSTFLAGS='-C opt-level=1' cross build --target $TARGET
+            RUSTFLAGS="-C opt-level=1" cross build --target $TARGET
+            ;;
+        "aarch64-pc-windows-msvc")
+            RUSTFLAGS="-C link-args=-fstack-protector-all -lssp" cross build --target $TARGET
             ;;
         *)
             cross build --target $TARGET
