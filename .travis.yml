@@ -13,8 +13,7 @@ matrix:
   include:
     # OSX
     # - env: TARGET=i686-apple-darwin
-    - if: tag IS present
-      env: TARGET=x86_64-apple-darwin
+    - env: TARGET=x86_64-apple-darwin
     - if: tag IS present
       env: TARGET=aarch64-apple-darwin
 
