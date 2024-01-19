@@ -13,7 +13,7 @@ dockerfile = "ci/Dockerfile"
 [target.i686-unknown-linux-musl]
 dockerfile = "ci/Dockerfile"
 
-[target.mips-unknown-linux-musl]
+[target.mips-unknown-linux-gnu]
 dockerfile = "ci/Dockerfile"
 build-std = true
 
