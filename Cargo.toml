@@ -55,5 +55,5 @@ codegen-units = 1
 [profile.opt-level-1]
 inherits = "release"
 
-[profile.opt-level-2.package.ring]
+[profile.opt-level-1.package.ring]
 opt-level = 1
