@@ -78,6 +78,7 @@ matrix:
       env: TARGET=x86_64-unknown-netbsd
 
 before_install:
+  # cross currently does not work with newer versions of docker
   - sudo systemctl stop docker.service && sudo systemctl stop docker.socket
   - for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
   - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/docker-ce_20.10.24~3-0~ubuntu-jammy_amd64.deb
@@ -86,17 +87,16 @@ before_install:
   - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/docker-compose-plugin_2.6.0~ubuntu-jammy_amd64.deb
   - wget https://download.docker.com/linux/ubuntu/dists/jammy/pool/stable/amd64/containerd.io_1.6.9-1_amd64.deb
   - yes | sudo dpkg -i containerd.io_1.6.9-1_amd64.deb docker-ce_20.10.24~3-0~ubuntu-jammy_amd64.deb docker-ce-cli_20.10.24~3-0~ubuntu-jammy_amd64.deb docker-buildx-plugin_0.11.2-1~ubuntu.22.04~jammy_amd64.deb docker-compose-plugin_2.6.0~ubuntu-jammy_amd64.deb
-  - sudo systemctl status docker.service
   - set -e
   - rustup self update
   - rustup component add rustfmt
 
 install:
-  - source ~/.cargo/env || true
+  - source $HOME/.cargo/env || true
   # install binstall
   - curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
   # install cross w/ binstall
-  - cargo binstall cross --git https://github.com/cross-rs/cross --no-confirm
+  - cargo binstall cross --git https://github.com/cross-rs/cross --no-confirm --force
 
 
 before_script:
@@ -120,9 +120,7 @@ deploy:
   skip_cleanup: true
   draft: true
 
-cache:
-  directories:
-    - $HOME/.cargo
+cache: cargo
 
 before_cache:
   # travis can't cache files that are not readable by "others"
