@@ -1,6 +1,7 @@
 # Based on the "trust" template v0.1.2
 # https://github.com/japaric/trust/tree/v0.1.2
 
+os: linux
 dist: jammy
 language: rust
 services: docker
@@ -9,7 +10,7 @@ env:
   global:
     - CRATE_NAME=cccp
 
-matrix:
+jobs:
   include:
     # OSX
     # - env: TARGET=i686-apple-darwin
@@ -101,14 +102,14 @@ after_script: set +e
 before_deploy: bash ci/before_deploy.sh
 
 deploy:
-  api_key:
+  token:
     secure: gCv8cVWxx3HL4lFw0gwC5vIl4tyyPTG2ulquxZbrzRBeob6Ys39Rj9KBYis4bY44jXFKNBMbmyCKPGB6l5hoqTCKk2T5evOauWrZm1m2nzzRgeZ5OSKOpFMevO8rJA7Kc52lOvrdBtmhpnNjo9J5FDrc6N28u3TBhZ3DUqhCFMSs6GfXBCLbK7pIGcZeeNSujfoRx9tiF2AdXcbD9Pn3jSXRozvcItjqfjMEyBFqyAhVz4dDvEb/TiCdqyffs7Xr1Er886xEIdDv4i5g6T+SAQDj2+2/8W4nysjArIYMxIRcqDBqaHd07tHPg5AWZDq4Wg9knpzA5Hu7UXv00iSejPsbzElxwHa3oyTF0yIGyldt4qe7/ru593TTOZXS8Cwo7EsYdfUWrfhsl/4otGet/Ta/QaBeHwf6Sx1e6IPstbIwzvfI0jG2VE8yBO4Afb/BkS2Ufwawxt1KoXOP8ES+I+UR05M4shGBvNvZLqCftH7TUPlgpRmZGVz5OOgPi7UFOm19Qf3IPDS/8GlDN+T1wzNQbVTrU+qP6ah0mPEXOwrJeLF2fNDiQzVFgl/mg60osFHHmLwKcAxPzkkZjtCbIt830PRgg43W8yTDERnorvw/IdfLOvu0ngseFER8p8iN16M3IvDcKJ3HKGkURN5gBAqdtLA56HZdAj21uD+waXw=
   file_glob: true
   file: $CRATE_NAME-$TRAVIS_TAG-$TARGET.*
   on:
     tags: true
   provider: releases
-  skip_cleanup: true
+  cleanup: false
   draft: true
 
 cache: cargo
