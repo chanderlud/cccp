@@ -17,7 +17,7 @@ dockerfile = "ci/Dockerfile"
 dockerfile = "ci/Dockerfile"
 build-std = true
 pre-build = [
-    "sudo apt-get -yq --no-install-suggests --no-install-recommends install gcc-mips-linux-gnu libc6-dev-mips-cross"
+    "apt-get -yq --no-install-suggests --no-install-recommends install gcc-mips-linux-gnu libc6-dev-mips-cross"
 ]
 
 [target.mipsel-unknown-linux-musl]
