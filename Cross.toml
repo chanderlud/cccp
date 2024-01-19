@@ -13,9 +13,12 @@ dockerfile = "ci/Dockerfile"
 [target.i686-unknown-linux-musl]
 dockerfile = "ci/Dockerfile"
 
-[target.mips-unknown-linux-gnu]
+[target.mips-unknown-linux-musl]
 dockerfile = "ci/Dockerfile"
 build-std = true
+pre-build = [
+    "sudo apt-get -yq --no-install-suggests --no-install-recommends install gcc-mips-linux-gnu libc6-dev-mips-cross"
+]
 
 [target.mipsel-unknown-linux-musl]
 dockerfile = "ci/Dockerfile"
@@ -74,6 +77,9 @@ dockerfile = "ci/Dockerfile"
 dockerfile = "ci/Dockerfile"
 
 [target.arm-unknown-linux-musleabihf]
+dockerfile = "ci/Dockerfile"
+
+[target.s390x-unknown-linux-gnu]
 dockerfile = "ci/Dockerfile"
 
 [target.x86_64-pc-windows-gnu]

@@ -11,7 +11,7 @@ main() {
 
             cross build --target $TARGET
             ;;
-        "mips-unknown-linux-gnu" | "mipsel-unknown-linux-musl")
+        "mips-unknown-linux-musl" | "mipsel-unknown-linux-musl")
             # MIPS targets require opt-level 1 due to a known issue in Rust
             RUSTFLAGS="-C opt-level=1" cross build --target $TARGET
             ;;

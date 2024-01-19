@@ -13,7 +13,9 @@ env:
 jobs:
   include:
     - # if: tag IS present
-      env: TARGET=mips-unknown-linux-gnu
+      env: TARGET=mips-unknown-linux-musl
+    - # if: tag IS present
+      env: TARGET=s390x-unknown-linux-gnu
     - # if: tag IS present
       env: TARGET=mips64-unknown-linux-gnuabi64
     - # if: tag IS present
