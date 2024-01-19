@@ -3,7 +3,7 @@
 set -euxo pipefail
 
 main() {
-    local SRC=$(pwd)
+    SRC=$(pwd)
     STAGE=$(mktemp -d)
 
     test -f Cargo.lock || cargo generate-lockfile
@@ -23,8 +23,8 @@ main() {
     fi
 
     cd $STAGE
-    tar czf $src/$CRATE_NAME-$TRAVIS_TAG-$TARGET.tar.gz *
-    cd $src
+    tar czf "${SRC}/${CRATE_NAME}-${TRAVIS_TAG}-${TARGET}.tar.gz" *
+    cd $SRC
 
     rm -rf $STAGE
 }
