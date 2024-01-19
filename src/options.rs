@@ -41,7 +41,7 @@ const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
 const TRANSFER_HEADING: &str = "\x1B[1m\x1B[4mNote:\x1B[0m using the \x1B[1mtransfer\x1B[0m command is equivalent to using no command at all";
 
 const INSTALL_HEADING: &str = "\x1B[1m\x1B[4mInstallation Tips\x1B[0m
-  - The installation location should be in path. Alternatively, pass the absolute path to the `command` transfer argument
+  - The installation location should be in PATH. Alternatively, pass the absolute path to the `command` transfer argument
   - The filename should be included in the destionation IoSpec (/usr/bin/\x1B[4m\x1B[1mcccp\x1B[0m)
   - /bin/cccp or /usr/bin/cccp are be good choices on Unix";
 
