@@ -25,28 +25,30 @@ are used for data transfer on UDP.
 ## Installer
 cccp can install itself on a remote host as long as that host supports SSH & SFTP.
 - The installation location should be in PATH. Alternatively, pass the absolute path to the `command` transfer argument
-- The filename should be included in the destination IoSpec (/usr/bin/cccp)
-- /bin/cccp or /usr/bin/cccp are be good choices on Unix
-
+- The filename should be included in the destination IoSpec (/usr/bin/**cccp**)
+- `/bin/cccp` or `/usr/bin/cccp` are be good choices on Unix
+```
 Usage: cccp[.exe] install [OPTIONS] <DESTINATION>
-
+  
 Arguments:  
 <DESTINATION> IoSpec for the remote host & install location  
-
+  
 Options:  
 -l, --log-level <LOG_LEVEL>          Log level [debug, info, warn, error] [default: warn]  
 -c, --custom-binary <CUSTOM_BINARY>  Use a custom binary instead of downloading from Github  
 -h, --help                           Print help  
 -V, --version                        Print version  
+```
 ## Transfer Usage
+```
 Note: using the transfer command is equivalent to using no command at all  
-
+  
 Usage: cccp[.exe] transfer [OPTIONS] <SOURCE> <DESTINATION>  
-
+  
 Arguments:  
 <SOURCE>       Source IoSpec (InSpec)  
 <DESTINATION>  Destination IoSpec (OutSpec)  
-
+  
 Options:  
 -s, --start-port <START_PORT>                First port to use [default: 50000]  
 -e, --end-port <END_PORT>                    Last port to use [default: 50009]  
@@ -70,3 +72,4 @@ Options:
 -L, --log-file <LOG_FILE>                    Log to a file (default: stderr / local only)  
 -h, --help                                   Print help  
 -V, --version                                Print version  
+```
