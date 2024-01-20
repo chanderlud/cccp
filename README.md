@@ -26,7 +26,7 @@ are used for data transfer on UDP.
 cccp can install itself on a remote host as long as that host supports SSH & SFTP.
 - The installation location should be in PATH. Alternatively, pass the absolute path to the `command` transfer argument
 - The filename should be included in the destination IoSpec (/usr/bin/**cccp**)
-- `/bin/cccp` or `/usr/bin/cccp` are be good choices on Unix
+- `/usr/bin/cccp` is a good choice on Unix
 ```
 Usage: cccp[.exe] install [OPTIONS] <DESTINATION>
   
@@ -41,9 +41,7 @@ Options:
 ```
 ## Transfer Usage
 ```
-Note: using the transfer command is equivalent to using no command at all  
-  
-Usage: cccp[.exe] transfer [OPTIONS] <SOURCE> <DESTINATION>  
+Usage: cccp[.exe] [OPTIONS] <SOURCE> <DESTINATION>  
   
 Arguments:  
 <SOURCE>       Source IoSpec (InSpec)  
