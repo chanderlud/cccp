@@ -114,9 +114,12 @@ async fn main() -> Result<()> {
     // kinda sketchy but it works reliably
     if let Some(arg) = args.get(1) {
         if arg == "install" {
-            let options = InstallOptions::parse();
+            // by skipping the first arg we can stop clap from tripping
+            let options = InstallOptions::parse_from(&args[1..]);
             return install(options).await;
         }
+    } else {
+        drop(args); // might as well drop it here
     }
 
     let mut options = Options::parse();
@@ -245,7 +248,7 @@ async fn main() -> Result<()> {
                         None,
                         signal,
                     )
-                        .await;
+                    .await;
 
                     match status {
                         Ok(status) if status != 0 => Err(Error::command_failed(status)),
