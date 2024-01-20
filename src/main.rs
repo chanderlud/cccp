@@ -129,8 +129,7 @@ async fn install(options: InstallOptions) -> Result<()> {
 
     if let Some(host) = options.destination.host {
         let client = connect_client(host, &options.destination.username).await?;
-        install::installer(client, options.destination.file_path, options.custom_binary)
-            .await
+        install::installer(client, options.destination.file_path, options.custom_binary).await
     } else {
         let mut command = InstallOptions::command();
 
