@@ -119,31 +119,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let options = Options::parse();
-    transfer(options).await
-}
-
-/// runs the installer
-async fn install(options: InstallOptions) -> Result<()> {
-    log_to_stderr(options.log_level);
-
-    if let Some(host) = options.destination.host {
-        let client = connect_client(host, &options.destination.username).await?;
-        install::installer(client, options.destination.file_path, options.custom_binary).await
-    } else {
-        let mut command = InstallOptions::command();
-
-        command
-            .error(
-                clap::error::ErrorKind::ValueValidation,
-                "host must be specified",
-            )
-            .exit();
-    }
-}
-
-/// runs a transfer
-async fn transfer(mut options: Options) -> Result<()> {
+    let mut options = Options::parse();
     let mut command = Options::command();
 
     let signal = Arc::new(Notify::new());
@@ -269,7 +245,7 @@ async fn transfer(mut options: Options) -> Result<()> {
                         None,
                         signal,
                     )
-                    .await;
+                        .await;
 
                     match status {
                         Ok(status) if status != 0 => Err(Error::command_failed(status)),
@@ -392,6 +368,25 @@ async fn transfer(mut options: Options) -> Result<()> {
 
     info!("exiting");
     Ok(())
+}
+
+/// runs the installer
+async fn install(options: InstallOptions) -> Result<()> {
+    log_to_stderr(options.log_level);
+
+    if let Some(host) = options.destination.host {
+        let client = connect_client(host, &options.destination.username).await?;
+        install::installer(client, options.destination.file_path, options.custom_binary).await
+    } else {
+        let mut command = InstallOptions::command();
+
+        command
+            .error(
+                clap::error::ErrorKind::ValueValidation,
+                "host must be specified",
+            )
+            .exit();
+    }
 }
 
 /// selects the function to run based on the mode
