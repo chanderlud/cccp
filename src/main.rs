@@ -245,7 +245,7 @@ async fn main() -> Result<()> {
                         None,
                         signal,
                     )
-                        .await;
+                    .await;
 
                     match status {
                         Ok(status) if status != 0 => Err(Error::command_failed(status)),
