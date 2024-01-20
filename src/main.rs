@@ -353,15 +353,13 @@ async fn main() -> Result<()> {
                 local_stats_printer(stats, interval)
             });
 
-            let sender_status = sender_handle.await??;
-            let receiver_status = receiver_handle.await??;
+            let status = select! {
+                status = sender_handle => status??,
+                status = receiver_handle => status??
+            };
 
-            if sender_status != 0 {
-                error!("sender command returned status {:?}", sender_status);
-            }
-
-            if receiver_status != 0 {
-                error!("receiver command returned status {:?}", receiver_status);
+            if status != 0 {
+                error!("remote returned status {}", status);
             }
 
             stats.complete.store(true, Relaxed);
