@@ -1,5 +1,6 @@
 #![feature(int_roundings)]
 
+use std::env;
 use std::io::{stdin, BufRead};
 use std::net::{IpAddr, SocketAddr};
 use std::ops::Not;
@@ -32,7 +33,7 @@ use crate::cipher::CipherStream;
 use crate::error::Error;
 use crate::items::Stats;
 
-use crate::options::{Cli, Commands, Mode, Options, SetupMode};
+use crate::options::{InstallOptions, Mode, Options, SetupMode};
 
 mod cipher;
 mod error;
@@ -108,33 +109,37 @@ impl TransferStats {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let args = env::args().collect::<Vec<_>>();
 
-    match cli.command {
-        Some(Commands::Transfer(options)) => transfer(*options).await,
-        Some(Commands::Install(options)) => {
-            log_to_stderr(options.log_level);
-
-            if let Some(host) = options.destination.host {
-                let client = connect_client(host, &options.destination.username).await?;
-                install::installer(client, options.destination.file_path, options.custom_binary)
-                    .await
-            } else {
-                let mut command = Cli::command();
-
-                command
-                    .error(
-                        clap::error::ErrorKind::ValueValidation,
-                        "host must be specified",
-                    )
-                    .exit();
-            }
+    // kinda sketchy but it works reliably
+    if let Some(arg) = args.get(1) {
+        if arg == "install" {
+            let options = InstallOptions::parse();
+            return install(options).await;
         }
-        None => {
-            // if no command is specified, run a transfer
-            let options = Options::parse();
-            transfer(options).await
-        }
+    }
+
+    let options = Options::parse();
+    transfer(options).await
+}
+
+/// runs the installer
+async fn install(options: InstallOptions) -> Result<()> {
+    log_to_stderr(options.log_level);
+
+    if let Some(host) = options.destination.host {
+        let client = connect_client(host, &options.destination.username).await?;
+        install::installer(client, options.destination.file_path, options.custom_binary)
+            .await
+    } else {
+        let mut command = InstallOptions::command();
+
+        command
+            .error(
+                clap::error::ErrorKind::ValueValidation,
+                "host must be specified",
+            )
+            .exit();
     }
 }
 
