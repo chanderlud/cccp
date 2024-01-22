@@ -30,7 +30,9 @@ pub(crate) enum ErrorKind {
     AsyncSsh(async_ssh2_tokio::Error),
     RuSsh(russh::Error),
     Base64Decode(base64::DecodeError),
+    #[cfg(feature = "installer")]
     Octocrab(octocrab::Error),
+    #[cfg(feature = "installer")]
     Sftp(russh_sftp::client::error::Error),
     MissingQueue,
     MaxRetries,
@@ -49,10 +51,13 @@ pub(crate) enum ErrorKind {
     /// the command failed with a non-zero exit status
     CommandFailed(u32),
     /// os identification failed on the remote host
+    #[cfg(feature = "installer")]
     UnknownOs((String, String)),
     /// no suitable release was found on github
+    #[cfg(feature = "installer")]
     NoSuitableRelease,
     /// the file was not found in the archive
+    #[cfg(feature = "installer")]
     FileNotFound,
 }
 
@@ -170,6 +175,7 @@ impl From<base64::DecodeError> for Error {
     }
 }
 
+#[cfg(feature = "installer")]
 impl From<octocrab::Error> for Error {
     fn from(error: octocrab::Error) -> Self {
         Self {
@@ -178,6 +184,7 @@ impl From<octocrab::Error> for Error {
     }
 }
 
+#[cfg(feature = "installer")]
 impl From<russh_sftp::client::error::Error> for Error {
     fn from(error: russh_sftp::client::error::Error) -> Self {
         Self {
@@ -205,7 +212,9 @@ impl std::fmt::Display for Error {
             ErrorKind::AsyncSsh(ref error) => write!(f, "ssh error: {}", error),
             ErrorKind::RuSsh(ref error) => write!(f, "ssh error: {}", error),
             ErrorKind::Base64Decode(ref error) => write!(f, "base64 decode error: {}", error),
+            #[cfg(feature = "installer")]
             ErrorKind::Octocrab(ref error) => write!(f, "octocrab error: {}", error),
+            #[cfg(feature = "installer")]
             ErrorKind::Sftp(ref error) => write!(f, "sftp error: {}", error),
             ErrorKind::MissingQueue => write!(f, "missing queue"),
             ErrorKind::MaxRetries => write!(f, "max retries"),
@@ -222,12 +231,15 @@ impl std::fmt::Display for Error {
             ErrorKind::CommandFailed(ref status) => {
                 write!(f, "command failed with status {}", status)
             }
+            #[cfg(feature = "installer")]
             ErrorKind::UnknownOs((ref stdout, ref stderr)) => {
                 write!(f, "unknown os {} | {}", stdout, stderr)
             }
+            #[cfg(feature = "installer")]
             ErrorKind::NoSuitableRelease => {
                 write!(f, "no suitable release for target, use --custom-binary")
             }
+            #[cfg(feature = "installer")]
             ErrorKind::FileNotFound => write!(f, "file not found"),
         }
     }
@@ -288,18 +300,21 @@ impl Error {
         }
     }
 
+    #[cfg(feature = "installer")]
     pub(crate) fn unknown_os(stdout: String, stderr: String) -> Self {
         Self {
             kind: ErrorKind::UnknownOs((stdout, stderr)),
         }
     }
 
+    #[cfg(feature = "installer")]
     pub(crate) fn no_suitable_release() -> Self {
         Self {
             kind: ErrorKind::NoSuitableRelease,
         }
     }
 
+    #[cfg(feature = "installer")]
     pub(crate) fn file_not_found() -> Self {
         Self {
             kind: ErrorKind::FileNotFound,

@@ -34,7 +34,9 @@ use crate::cipher::CipherStream;
 use crate::error::Error;
 use crate::items::Stats;
 
-use crate::options::{InstallOptions, Mode, Options, SetupMode};
+use crate::options::{Mode, Options, SetupMode};
+#[cfg(feature = "installer")]
+use crate::options::InstallOptions;
 
 mod cipher;
 mod error;
@@ -375,6 +377,7 @@ async fn main() -> Result<()> {
 }
 
 /// runs the installer
+#[cfg(feature = "installer")]
 async fn install(options: InstallOptions) -> Result<()> {
     log_to_stderr(options.log_level);
 
