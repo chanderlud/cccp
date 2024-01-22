@@ -34,9 +34,9 @@ use crate::cipher::CipherStream;
 use crate::error::Error;
 use crate::items::Stats;
 
-use crate::options::{Mode, Options, SetupMode};
 #[cfg(feature = "installer")]
 use crate::options::InstallOptions;
+use crate::options::{Mode, Options, SetupMode};
 
 mod cipher;
 mod error;
