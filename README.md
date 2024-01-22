@@ -25,8 +25,9 @@ are used for data transfer on UDP.
 ## Installer
 cccp can install itself on a remote host as long as that host supports SSH & SFTP.
 - The installation location should be in PATH. Alternatively, pass the absolute path to the `command` transfer argument
-- The filename should be included in the destination IoSpec (/usr/bin/**cccp**)
-- `/usr/bin/cccp` is a good choice on Unix
+- `/usr/bin/cccp` is a good choice on Linux and BSD
+- `/usr/local/bin/cccp` is a good choice on macOS
+- On Windows you could install to `C:\Windows` or `C:\Windows\System32` but this is not recommended
 ```
 Usage: cccp[.exe] install [OPTIONS] <DESTINATION>
   

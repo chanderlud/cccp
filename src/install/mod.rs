@@ -25,9 +25,21 @@ enum Os {
 
 pub(crate) async fn installer(
     client: Client,
-    destination: PathBuf,
+    mut destination: PathBuf,
     custom_binary: Option<PathBuf>,
 ) -> Result<()> {
+    let os = identify_os(&client).await?; // identify the remote os
+
+    if is_dir(&client, &os, &destination).await? {
+        // append the binary name to the destination if it is a directory
+        match os {
+            Os::Windows => destination.push("cccp.exe"),
+            Os::UnixLike => destination.push("cccp"),
+        }
+
+        debug!("appended binary name to destination: {:?}", destination);
+    }
+
     if let Some(file_path) = custom_binary {
         debug!("using custom binary {}", file_path.display());
 
@@ -40,7 +52,6 @@ pub(crate) async fn installer(
         return Ok(());
     }
 
-    let os = identify_os(&client).await?; // identify the remote os
     let triple = get_triple(&client, &os).await?; // get the target triple
 
     // initialize octocrab
@@ -143,4 +154,26 @@ async fn transfer_binary(client: &Client, content: &[u8], destination: PathBuf) 
     debug!("wrote file to {}", destination.display());
 
     Ok(())
+}
+
+async fn is_dir(client: &Client, os: &Os, path: &PathBuf) -> Result<bool> {
+    let path = path.to_string_lossy();
+
+    let command = match os {
+        Os::Windows => format!("if exist \"{}\" ( if not exist \"{}\" ( echo false ) else ( echo true )) else (echo error)", path, path),
+        Os::UnixLike => format!("[ -d \"{}\" ] && echo true || ([ -f \"{}\" ] && echo false || echo error)", path, path),
+    };
+
+    let result = client.execute(&command).await?;
+
+    if result.exit_status == 0 {
+        match result.stdout.chars().next() {
+            Some('t') => Ok(true),
+            Some('f') => Ok(false),
+            Some('e') => Err(Error::file_not_found()),
+            _ => Err(Error::command_failed(result.exit_status)),
+        }
+    } else {
+        Err(Error::command_failed(result.exit_status))
+    }
 }
