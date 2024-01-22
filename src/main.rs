@@ -1,5 +1,6 @@
 #![feature(int_roundings)]
 
+#[cfg(feature = "installer")]
 use std::env;
 use std::io::{stdin, BufRead};
 use std::net::{IpAddr, SocketAddr};
@@ -37,6 +38,7 @@ use crate::options::{InstallOptions, Mode, Options, SetupMode};
 
 mod cipher;
 mod error;
+#[cfg(feature = "installer")]
 mod install;
 mod items;
 mod options;
@@ -109,17 +111,18 @@ impl TransferStats {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = env::args().collect::<Vec<_>>();
+    #[cfg(feature = "installer")]
+    {
+        let args = env::args().collect::<Vec<_>>();
 
-    // kinda sketchy but it works reliably
-    if let Some(arg) = args.get(1) {
-        if arg == "install" {
-            // by skipping the first arg we can stop clap from tripping
-            let options = InstallOptions::parse_from(&args[1..]);
-            return install(options).await;
+        // kinda sketchy but it works reliably
+        if let Some(arg) = args.get(1) {
+            if arg == "install" {
+                // by skipping the first arg we can stop clap from tripping
+                let options = InstallOptions::parse_from(&args[1..]);
+                return install(options).await;
+            }
         }
-    } else {
-        drop(args); // might as well drop it here
     }
 
     let mut options = Options::parse();
