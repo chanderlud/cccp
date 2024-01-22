@@ -12,9 +12,14 @@ main() {
         *darwin*)
             $HOME/.cargo/bin/rustup component add rust-src
             ;;
+        "mips-unknown-linux-musl" | "mips64-unknown-linux-gnuabi64" | "aarch64-pc-windows-msvc")
+            # these targets cannot build the installer version currently
+            cross build --target $TARGET --release --no-default-features
+            ;;
+        *)
+            cross build --target $TARGET --release
+            ;;
     esac
-
-    cross build --target $TARGET --release
 
     if [[ -f "target/${TARGET}/release/${CRATE_NAME}.exe" ]]; then
         mv "target/${TARGET}/release/${CRATE_NAME}.exe" "${STAGE}/"

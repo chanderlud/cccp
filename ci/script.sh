@@ -11,9 +11,18 @@ main() {
 
             cross build --target $TARGET
             ;;
-        "mips-unknown-linux-musl" | "mipsel-unknown-linux-musl")
+        "mipsel-unknown-linux-musl")
             # MIPS targets require opt-level 1 due to a known issue in Rust
             RUSTFLAGS="-C opt-level=1" cross build --target $TARGET
+            ;;
+        "mips-unknown-linux-musl")
+            # MIPS targets require opt-level 1 due to a known issue in Rust
+            # mips cannot build the installer version currently
+            RUSTFLAGS="-C opt-level=1" cross build --target $TARGET --no-default-features
+            ;;
+        "mips64-unknown-linux-gnuabi64" | "aarch64-pc-windows-msvc")
+            # mips64 & aarch64-pc cannot build the installer version currently
+            cross build --target $TARGET --no-default-features
             ;;
         *)
             cross build --target $TARGET
