@@ -10,17 +10,16 @@ main() {
 
     case $TARGET in
         *darwin*)
+            # macOs targets require rust-src component
             $HOME/.cargo/bin/rustup component add rust-src
-            cross build --target $TARGET --release
-            ;;
-        "mips-unknown-linux-musl" | "mips64-unknown-linux-gnuabi64" | "aarch64-pc-windows-msvc")
-            # these targets cannot build the installer version currently
-            cross build --target $TARGET --release --no-default-features
-            ;;
-        *)
-            cross build --target $TARGET --release
             ;;
     esac
+
+    if [ "${NO_INSTALLER:-0}" = "1" ]; then
+        cross build --target $TARGET --release --no-default-features
+    else
+        cross build --target $TARGET --release
+    fi
 
     if [[ -f "target/${TARGET}/release/${CRATE_NAME}.exe" ]]; then
         mv "target/${TARGET}/release/${CRATE_NAME}.exe" "${STAGE}/"

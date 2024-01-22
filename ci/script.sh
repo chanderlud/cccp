@@ -7,31 +7,28 @@ main() {
 
     case "$TARGET" in
         *darwin*)
+            # macOs targets require rust-src component
             $HOME/.cargo/bin/rustup component add rust-src
-
-            cross build --target $TARGET
+            CMD="cross build --target ${TARGET}"
             ;;
-        "mipsel-unknown-linux-musl")
-            # MIPS targets require opt-level 1 due to a known issue in Rust
-            RUSTFLAGS="-C opt-level=1" cross build --target $TARGET
-            ;;
-        "mips-unknown-linux-musl")
-            # MIPS targets require opt-level 1 due to a known issue in Rust
-            # mips cannot build the installer version currently
-            RUSTFLAGS="-C opt-level=1" cross build --target $TARGET --no-default-features
-            ;;
-        "mips64-unknown-linux-gnuabi64" | "aarch64-pc-windows-msvc")
-            # mips64 & aarch64-pc cannot build the installer version currently
-            cross build --target $TARGET --no-default-features
+        "mipsel-unknown-linux-musl" | "mips-unknown-linux-musl")
+            # these targets require opt-level 1 due to a known issue in Rust
+            CMD="RUSTFLAGS=\"-C opt-level=1\" cross build --target ${TARGET}"
             ;;
         *)
-            cross build --target $TARGET
-
-            if [ "${ENABLE_TESTS:-0}" = "1" ]; then
-                cross clippy --target $TARGET
-            fi
+            CMD="cross build --target ${TARGET}"
             ;;
     esac
+
+    if [ "${NO_INSTALLER:-0}" = "1" ]; then
+        $CMD --no-default-features
+    else
+        $CMD
+    fi
+
+    if [ "${ENABLE_TESTS:-0}" = "1" ]; then
+        cross clippy --target $TARGET
+    fi
 }
 
 # only run if not deploying
