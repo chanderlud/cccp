@@ -1,5 +1,5 @@
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_compression::futures::bufread::GzipDecoder;
 use async_ssh2_tokio::Client;
@@ -156,7 +156,7 @@ async fn transfer_binary(client: &Client, content: &[u8], destination: PathBuf) 
     Ok(())
 }
 
-async fn is_dir(client: &Client, os: &Os, path: &PathBuf) -> Result<bool> {
+async fn is_dir(client: &Client, os: &Os, path: &Path) -> Result<bool> {
     let path = path.to_string_lossy();
 
     let command = match os {
