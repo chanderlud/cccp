@@ -11,6 +11,7 @@ main() {
     case $TARGET in
         *darwin*)
             $HOME/.cargo/bin/rustup component add rust-src
+            cross build --target $TARGET --release
             ;;
         "mips-unknown-linux-musl" | "mips64-unknown-linux-gnuabi64" | "aarch64-pc-windows-msvc")
             # these targets cannot build the installer version currently
