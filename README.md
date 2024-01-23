@@ -34,11 +34,12 @@ Usage: cccp[.exe] install [OPTIONS] <DESTINATION>
 Arguments:  
 <DESTINATION> IoSpec for the remote host & install location  
   
-Options:  
--l, --log-level <LOG_LEVEL>          Log level [debug, info, warn, error] [default: warn]  
--c, --custom-binary <CUSTOM_BINARY>  Use a custom binary instead of downloading from Github  
--h, --help                           Print help  
--V, --version                        Print version  
+Options:
+  -l, --log-level <LOG_LEVEL>          Log level [debug, info, warn, error] [default: warn]
+  -c, --custom-binary <CUSTOM_BINARY>  Use a custom binary instead of downloading from Github
+  -o, --overwrite                      Overwrite an existing file without prompting
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 ## Transfer Usage
 ```
