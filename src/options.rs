@@ -38,10 +38,12 @@ const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m
   - The first two ports are used for TCP streams which carry control messages
   - The remaining ports are UDP sockets which carry data";
 
+#[cfg(feature = "installer")]
 const INSTALL_HEADING: &str = "\x1B[1m\x1B[4mInstallation Tips\x1B[0m
-  - The installation location should be in PATH. Alternatively, pass the absolute path to the `command` transfer argument
-  - The filename should be included in the destionation IoSpec (/usr/bin/\x1B[4m\x1B[1mcccp\x1B[0m)
-  - /bin/cccp or /usr/bin/cccp are be good choices on Unix";
+- The installation location should be in PATH. Alternatively, pass the absolute path to the \x1B[1m\x1B[4mcommand\x1B[0m transfer argument
+- /usr/bin/cccp is a good choice on Linux and BSD
+- /usr/local/bin/cccp is a good choice on macOS
+- On Windows you could install to C:\\Windows or C:\\Windows\\System32 but this is not recommended";
 
 #[derive(Parser)]
 #[clap(version, about = HELP_HEADING)]
@@ -194,12 +196,10 @@ impl Options {
     }
 }
 
+#[cfg(feature = "installer")]
 #[derive(Parser)]
 #[clap(version, about = INSTALL_HEADING)]
 pub(crate) struct InstallOptions {
-    /// IoSpec for the remote host & install location
-    pub(crate) destination: IoSpec,
-
     /// Log level [debug, info, warn, error]
     #[clap(short, long, default_value = "warn")]
     pub(crate) log_level: LevelFilter,
@@ -207,6 +207,13 @@ pub(crate) struct InstallOptions {
     /// Use a custom binary instead of downloading from Github
     #[clap(short, long)]
     pub(crate) custom_binary: Option<PathBuf>,
+
+    /// Overwrite an existing file without prompting
+    #[clap(short, long)]
+    pub(crate) overwrite: bool,
+
+    /// IoSpec for the remote host & install location
+    pub(crate) destination: IoSpec,
 }
 
 #[derive(Clone, PartialEq)]

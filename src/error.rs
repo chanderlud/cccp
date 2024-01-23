@@ -34,6 +34,8 @@ pub(crate) enum ErrorKind {
     Octocrab(octocrab::Error),
     #[cfg(feature = "installer")]
     Sftp(russh_sftp::client::error::Error),
+    #[cfg(feature = "installer")]
+    SemVer(semver::Error),
     MissingQueue,
     MaxRetries,
     #[cfg(windows)]
@@ -56,9 +58,12 @@ pub(crate) enum ErrorKind {
     /// no suitable release was found on github
     #[cfg(feature = "installer")]
     NoSuitableRelease,
-    /// the file was not found in the archive
+    /// the file was not found
     #[cfg(feature = "installer")]
     FileNotFound,
+    /// the directory was not found
+    #[cfg(feature = "installer")]
+    DirectoryNotFound,
 }
 
 impl From<io::Error> for Error {
@@ -193,6 +198,15 @@ impl From<russh_sftp::client::error::Error> for Error {
     }
 }
 
+#[cfg(feature = "installer")]
+impl From<semver::Error> for Error {
+    fn from(error: semver::Error) -> Self {
+        Self {
+            kind: ErrorKind::SemVer(error),
+        }
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
@@ -216,6 +230,8 @@ impl std::fmt::Display for Error {
             ErrorKind::Octocrab(ref error) => write!(f, "octocrab error: {}", error),
             #[cfg(feature = "installer")]
             ErrorKind::Sftp(ref error) => write!(f, "sftp error: {}", error),
+            #[cfg(feature = "installer")]
+            ErrorKind::SemVer(ref error) => write!(f, "semver error: {}", error),
             ErrorKind::MissingQueue => write!(f, "missing queue"),
             ErrorKind::MaxRetries => write!(f, "max retries"),
             #[cfg(windows)]
@@ -241,6 +257,8 @@ impl std::fmt::Display for Error {
             }
             #[cfg(feature = "installer")]
             ErrorKind::FileNotFound => write!(f, "file not found"),
+            #[cfg(feature = "installer")]
+            ErrorKind::DirectoryNotFound => write!(f, "directory not found"),
         }
     }
 }
@@ -318,6 +336,13 @@ impl Error {
     pub(crate) fn file_not_found() -> Self {
         Self {
             kind: ErrorKind::FileNotFound,
+        }
+    }
+
+    #[cfg(feature = "installer")]
+    pub(crate) fn directory_not_found() -> Self {
+        Self {
+            kind: ErrorKind::DirectoryNotFound,
         }
     }
 
