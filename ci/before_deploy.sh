@@ -15,7 +15,7 @@ main() {
             ;;
     esac
 
-    if [ -n "${OPT_LEVEL}" ]; then
+    if [ -n "${OPT_LEVEL:-}" ]; then
         PROFILE="opt-level-${OPT_LEVEL}"
     else
         PROFILE="release"

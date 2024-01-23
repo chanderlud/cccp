@@ -20,10 +20,10 @@ main() {
             ;;
     esac
 
-    if [ -n "${OPT_LEVEL}" ]; then
+    if [ -n "${OPT_LEVEL:-}" ]; then
         PROFILE="opt-level-${OPT_LEVEL}"
     else
-        PROFILE="dev"
+        PROFILE="release"
     fi
 
     if [ "${NO_INSTALLER:-0}" = "1" ]; then
