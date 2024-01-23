@@ -9,9 +9,9 @@ use russh_sftp::client::SftpSession;
 use semver::Version;
 use tar::Archive;
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{stdin, stdout, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::error::Error;
+use crate::error::{Error, ErrorKind};
 use crate::Result;
 
 const WINDOWS_TARGET: &str = include_str!("target.bat");
@@ -27,17 +27,52 @@ pub(crate) async fn installer(
     client: Client,
     mut destination: PathBuf,
     custom_binary: Option<PathBuf>,
+    mut overwrite: bool,
 ) -> Result<()> {
     let os = identify_os(&client).await?; // identify the remote os
 
-    if is_dir(&client, &os, &destination).await? {
-        // append the binary name to the destination if it is a directory
-        match os {
-            Os::Windows => destination.push("cccp.exe"),
-            Os::UnixLike => destination.push("cccp"),
-        }
+    // loop until the destination is a file
+    loop {
+        match is_dir(&client, &os, &destination).await {
+            Ok(true) => {
+                // append the binary name to the destination if it is a directory
+                match os {
+                    Os::Windows => destination.push("cccp.exe"),
+                    Os::UnixLike => destination.push("cccp"),
+                }
 
-        debug!("appended binary name to destination: {:?}", destination);
+                debug!("appended binary name to destination: {:?}", destination);
+            }
+            Ok(false) => {
+                if !overwrite {
+                    // async stdout prompt
+                    let mut stdout = stdout();
+                    stdout
+                        .write_all(b"file already exists, overwrite? [y/N] ")
+                        .await?;
+                    stdout.flush().await?;
+
+                    let mut input = String::new(); // buffer for input
+                    let mut stdin = BufReader::new(stdin()); // stdin reader
+
+                    stdin.read_line(&mut input).await?; // read input into buffer
+                    input.make_ascii_lowercase(); // convert to lowercase
+
+                    overwrite = input.starts_with('y'); // update overwrite
+                }
+
+                if overwrite {
+                    break;
+                } else {
+                    return Ok(());
+                }
+            }
+            Err(error) => match error.kind {
+                // if the file does not exist, that is fine
+                ErrorKind::FileNotFound => break,
+                _ => return Err(error),
+            },
+        }
     }
 
     if let Some(file_path) = custom_binary {
@@ -66,10 +101,11 @@ pub(crate) async fn installer(
 
     info!("installing cccp-{}-{}", release.tag_name, triple);
 
+    // cccp tags are always prefixed with a v
+    let tag_version = release.tag_name.strip_prefix('v').unwrap();
+
     // check if the local version is out of date
-    if Version::parse(VERSION).unwrap()
-        < Version::parse(release.tag_name.strip_prefix('v').unwrap()).unwrap()
-    {
+    if Version::parse(VERSION)? < Version::parse(tag_version)? {
         warn!(
             "the local version of cccp is out of date [v{} < {}]",
             VERSION, release.tag_name
@@ -157,11 +193,18 @@ async fn transfer_binary(client: &Client, content: &[u8], destination: PathBuf) 
 }
 
 async fn is_dir(client: &Client, os: &Os, path: &Path) -> Result<bool> {
+    let parent_directory = path.parent().map_or(".".into(), |p| p.to_string_lossy());
     let path = path.to_string_lossy();
 
     let command = match os {
-        Os::Windows => format!("if exist \"{}\" ( if not exist \"{}\" ( echo false ) else ( echo true )) else (echo error)", path, path),
-        Os::UnixLike => format!("[ -d \"{}\" ] && echo true || ([ -f \"{}\" ] && echo false || echo error)", path, path),
+        Os::Windows => format!(
+            "if exist \"{}\" ( if exist \"{}\" ( echo true ) else ( if exist \"{}\" ( echo false ) else ( echo not_found ))) else (echo dnf)",
+            parent_directory, path, path
+        ),
+        Os::UnixLike => format!(
+            "[ -d \"{}\" ] && ( [ -d \"{}\" ] && echo true || ([ -f \"{}\" ] && echo false || echo not_found )) || echo dnf",
+            parent_directory, path, path
+        ),
     };
 
     let result = client.execute(&command).await?;
@@ -170,7 +213,8 @@ async fn is_dir(client: &Client, os: &Os, path: &Path) -> Result<bool> {
         match result.stdout.chars().next() {
             Some('t') => Ok(true),
             Some('f') => Ok(false),
-            Some('e') => Err(Error::file_not_found()),
+            Some('n') => Err(Error::file_not_found()),
+            Some('d') => Err(Error::directory_not_found()),
             _ => Err(Error::command_failed(result.exit_status)),
         }
     } else {
