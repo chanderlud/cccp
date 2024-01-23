@@ -20,10 +20,16 @@ main() {
             ;;
     esac
 
-    if [ "${NO_INSTALLER:-0}" = "1" ]; then
-        $CMD --no-default-features
+    if [ -n "${OPT_LEVEL}" ]; then
+        PROFILE="opt-level-${OPT_LEVEL}"
     else
-        $CMD
+        PROFILE="dev"
+    fi
+
+    if [ "${NO_INSTALLER:-0}" = "1" ]; then
+        $CMD --no-default-features --profile $PROFILE
+    else
+        $CMD --profile $PROFILE
     fi
 
     if [ "${ENABLE_TESTS:-0}" = "1" ]; then

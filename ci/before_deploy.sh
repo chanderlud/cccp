@@ -15,10 +15,16 @@ main() {
             ;;
     esac
 
-    if [ "${NO_INSTALLER:-0}" = "1" ]; then
-        cross build --target $TARGET --release --no-default-features
+    if [ -n "${OPT_LEVEL}" ]; then
+        PROFILE="opt-level-${OPT_LEVEL}"
     else
-        cross build --target $TARGET --release
+        PROFILE="release"
+    fi
+
+    if [ "${NO_INSTALLER:-0}" = "1" ]; then
+        cross build --target $TARGET --no-default-features --profile $PROFILE
+    else
+        cross build --target $TARGET --release --profile $PROFILE
     fi
 
     if [[ -f "target/${TARGET}/release/${CRATE_NAME}.exe" ]]; then
