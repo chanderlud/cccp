@@ -15,8 +15,6 @@ jobs:
     - env: TARGET=x86_64-pc-windows-gnu ENABLE_TESTS=1
     - env: TARGET=x86_64-unknown-linux-gnu ENABLE_TESTS=1
     - env: TARGET=x86_64-apple-darwin
-    - env: TARGET=aarch64-pc-windows-msvc NO_INSTALLER=1 OPT_LEVEL=2
-    - env: TARGET=aarch64-pc-windows-msvc NO_INSTALLER=1 OPT_LEVEL=1
 
     # OSX
     # - env: TARGET=i686-apple-darwin
@@ -30,6 +28,9 @@ jobs:
       env: TARGET=x86_64-pc-windows-msvc
     - if: tag IS present
       env: TARGET=i686-pc-windows-msvc
+    # aarch64-pc-windows-msvc fails to compile on opt level 3
+    - if: tag IS present
+      env: TARGET=aarch64-pc-windows-msvc NO_INSTALLER=1 OPT_LEVEL=2
 
     # Linux
     - if: tag IS present

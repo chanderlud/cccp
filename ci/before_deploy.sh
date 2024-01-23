@@ -15,6 +15,7 @@ main() {
             ;;
     esac
 
+    # this enables the use of different optimization levels for certain targets
     if [ -n "${OPT_LEVEL:-}" ]; then
         PROFILE="opt-level-${OPT_LEVEL}"
     else
