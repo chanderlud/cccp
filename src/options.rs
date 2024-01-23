@@ -17,7 +17,8 @@ use crate::cipher::random_bytes;
 use crate::items::{Cipher, Crypto};
 use crate::PACKET_SIZE;
 
-const HELP_HEADING: &str = "\x1B[1m\x1B[4mAbout\x1B[0m: cccp is a fast, secure, and reliable file transfer utility
+const HELP_HEADING: &str =
+    "\x1B[1m\x1B[4mAbout\x1B[0m: cccp is a fast, secure, and reliable file transfer utility
 
 \x1B[1m\x1B[4mIoSpec\x1B[0m
   - [user@][host:{port:}]file
