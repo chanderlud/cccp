@@ -1,6 +1,6 @@
 [package]
 name = "cccp"
-version = "0.11.2"
+version = "0.11.3"
 edition = "2021"
 build = "build.rs"
 repository = "https://github.com/chanderlud/cccp"
@@ -9,13 +9,13 @@ authors = ["Chander Luderman Miller <me@chanchan.dev>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.4", features = ["derive"] }
-tokio = { version = "1.35", default-features = false, features = ["macros", "fs", "io-util", "signal", "io-std"] }
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1.37", default-features = false, features = ["macros", "fs", "io-util", "signal", "io-std"] }
 futures = "0.3"
 log = { version = "0.4", features = ["std"] }
-async-ssh2-tokio = "0.8.5"
-russh = "0.40"
-russh-sftp = { version = "2.0.0-beta.4", optional = true }
+async-ssh2-tokio = "0.8.8"
+russh = "0.40.2"
+russh-sftp = { version = "2.0.0-beta.2", optional = true }
 simple-logging = "2.0"
 regex = "1.10"
 dirs = "5.0"
@@ -26,19 +26,20 @@ bytesize = "1.3"
 kanal = "0.1.0-pre8"
 blake3 = "1.5"
 chacha20 = "0.9"
-base64 = "0.21"
+base64 = "0.22.0"
 ctr = "0.9"
 aes = "0.8"
-whoami = "1.4"
+whoami = "1.5"
 cipher = "0.4"
 rand = "0.8"
-octocrab = { version = "0.33", optional = true }
+octocrab = { version = "0.38", optional = true }
 async-compression = { version = "0.4", features = ["futures-io", "gzip"], optional = true }
 tar = { version = "0.4", optional = true }
 semver = { version = "1.0", optional = true }
+http-body-util = "*"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.27", features = ["fs"] }
+nix = { version = "0.28", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
