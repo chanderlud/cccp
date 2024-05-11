@@ -12,6 +12,8 @@ pub(crate) struct Error {
     pub(crate) kind: ErrorKind,
 }
 
+impl std::error::Error for Error {}
+
 #[derive(Debug)]
 pub(crate) enum ErrorKind {
     Io(io::Error),
@@ -55,7 +57,7 @@ pub(crate) enum ErrorKind {
     /// os identification failed on the remote host
     #[cfg(feature = "installer")]
     UnknownOs((String, String)),
-    /// no suitable release was found on github
+    /// no suitable release was found on GitHub
     #[cfg(feature = "installer")]
     NoSuitableRelease,
     /// the file was not found
@@ -64,6 +66,7 @@ pub(crate) enum ErrorKind {
     /// the directory was not found
     #[cfg(feature = "installer")]
     DirectoryNotFound,
+    EmptyFrame,
 }
 
 impl From<io::Error> for Error {
@@ -207,6 +210,12 @@ impl From<semver::Error> for Error {
     }
 }
 
+impl From<ErrorKind> for Error {
+    fn from(kind: ErrorKind) -> Self {
+        Self { kind }
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind {
@@ -259,97 +268,7 @@ impl std::fmt::Display for Error {
             ErrorKind::FileNotFound => write!(f, "file not found"),
             #[cfg(feature = "installer")]
             ErrorKind::DirectoryNotFound => write!(f, "directory not found"),
-        }
-    }
-}
-
-impl Error {
-    pub(crate) fn missing_queue() -> Self {
-        Self {
-            kind: ErrorKind::MissingQueue,
-        }
-    }
-
-    pub(crate) fn max_retries() -> Self {
-        Self {
-            kind: ErrorKind::MaxRetries,
-        }
-    }
-
-    pub(crate) fn failure(reason: u32) -> Self {
-        Self {
-            kind: ErrorKind::Failure(reason),
-        }
-    }
-
-    pub(crate) fn empty_path() -> Self {
-        Self {
-            kind: ErrorKind::EmptyPath,
-        }
-    }
-
-    pub(crate) fn invalid_extension() -> Self {
-        Self {
-            kind: ErrorKind::InvalidExtension,
-        }
-    }
-
-    pub(crate) fn unexpected_message(message: Box<dyn Message>) -> Self {
-        Self {
-            kind: ErrorKind::UnexpectedMessage(message),
-        }
-    }
-
-    pub(crate) fn no_exit_status() -> Self {
-        Self {
-            kind: ErrorKind::NoExitStatus,
-        }
-    }
-
-    pub(crate) fn command_not_found() -> Self {
-        Self {
-            kind: ErrorKind::CommandNotFound,
-        }
-    }
-
-    pub(crate) fn command_failed(status: u32) -> Self {
-        Self {
-            kind: ErrorKind::CommandFailed(status),
-        }
-    }
-
-    #[cfg(feature = "installer")]
-    pub(crate) fn unknown_os(stdout: String, stderr: String) -> Self {
-        Self {
-            kind: ErrorKind::UnknownOs((stdout, stderr)),
-        }
-    }
-
-    #[cfg(feature = "installer")]
-    pub(crate) fn no_suitable_release() -> Self {
-        Self {
-            kind: ErrorKind::NoSuitableRelease,
-        }
-    }
-
-    #[cfg(feature = "installer")]
-    pub(crate) fn file_not_found() -> Self {
-        Self {
-            kind: ErrorKind::FileNotFound,
-        }
-    }
-
-    #[cfg(feature = "installer")]
-    pub(crate) fn directory_not_found() -> Self {
-        Self {
-            kind: ErrorKind::DirectoryNotFound,
-        }
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn status_error() -> Self {
-        Self {
-            kind: ErrorKind::StatusError,
+            ErrorKind::EmptyFrame => write!(f, "empty frame"),
         }
     }
 }

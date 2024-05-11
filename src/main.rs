@@ -31,7 +31,7 @@ use tokio::time::{interval, sleep, Instant, Interval};
 use tokio::{io, select};
 
 use crate::cipher::CipherStream;
-use crate::error::Error;
+use crate::error::{Error, ErrorKind};
 use crate::items::Stats;
 
 #[cfg(feature = "installer")]
@@ -256,7 +256,7 @@ async fn main() -> Result<()> {
                     .await;
 
                     match status {
-                        Ok(status) if status != 0 => Err(Error::command_failed(status)),
+                        Ok(status) if status != 0 => Err(ErrorKind::CommandFailed(status).into()),
                         Err(error) => Err(error),
                         Ok(_) => {
                             debug!("remote command exited with status 0");
@@ -508,7 +508,7 @@ fn password_auth(host: &SocketAddr) -> io::Result<AuthMethod> {
 
 /// print a progress bar & stats to stdout
 async fn local_stats_printer(stats: TransferStats, mut interval: Interval) {
-    let bar = ProgressBar::new(100);
+    let bar = ProgressBar::new(1_000);
 
     bar.set_style(
         ProgressStyle::default_bar()
@@ -522,7 +522,7 @@ async fn local_stats_printer(stats: TransferStats, mut interval: Interval) {
     while !stats.is_complete() {
         interval.tick().await;
 
-        let progress = stats.confirmed() as f64 / stats.total() as f64 * 100_f64;
+        let progress = stats.confirmed() as f64 / stats.total() as f64 * 1_000_f64;
         let speed = stats.speed();
         let packet_loss = stats.packet_loss();
 
@@ -606,17 +606,17 @@ async fn command_runner(
                             let error = String::from_utf8_lossy(data).replace('\n', "");
 
                             if error.contains("not recognized as an internal or external command") {
-                                break Err(Error::command_not_found());
+                                break Err(ErrorKind::CommandNotFound.into());
                             } else {
                                 error!("remote client stderr: {}", error);
                             }
                         }
-                        ChannelMsg::ExitStatus { exit_status: 127 } => break Err(Error::command_not_found()),
+                        ChannelMsg::ExitStatus { exit_status: 127 } => break Err(ErrorKind::CommandNotFound.into()),
                         ChannelMsg::ExitStatus { exit_status } => break Ok(exit_status),
                         _ => debug!("other message: {:?}", message),
                     }
                 } else {
-                    break Err(Error::no_exit_status())
+                    break Err(ErrorKind::NoExitStatus.into());
                 }
             }
         }

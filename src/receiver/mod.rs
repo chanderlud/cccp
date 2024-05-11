@@ -19,7 +19,7 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, timeout};
 
-use crate::error::Error;
+use crate::error::{Error, ErrorKind};
 use crate::items::{message, ConfirmationIndexes, Message, StartIndex};
 use crate::receiver::writer::{writer, FileDetails, SplitQueue};
 use crate::{
@@ -63,7 +63,7 @@ pub(crate) async fn main(
             warn!("remote client found no files to send");
             return Ok(());
         }
-        _ => return Err(Error::unexpected_message(Box::new(message))),
+        _ => return Err(ErrorKind::UnexpectedMessage(Box::new(message)).into()),
     };
 
     // if multiple files are being received, the destination should be a directory
@@ -97,7 +97,7 @@ pub(crate) async fn main(
                 let partial_extension = if let Some(extension) = path.extension() {
                     extension
                         .to_str()
-                        .ok_or(Error::invalid_extension())?
+                        .ok_or(ErrorKind::InvalidExtension)?
                         .to_owned()
                         + ".partial"
                 } else {
@@ -149,7 +149,7 @@ pub(crate) async fn main(
                 .write_message(&Message::failure(0, 1, None))
                 .await?;
 
-            return Err(Error::failure(1));
+            return Err(ErrorKind::Failure(1).into());
         }
     }
 
@@ -276,7 +276,7 @@ async fn receiver(
     }
 
     if retries == max_retries {
-        Err(Error::max_retries())
+        Err(ErrorKind::MaxRetries.into())
     } else {
         Ok(())
     }
@@ -341,13 +341,13 @@ async fn controller(
                     // 0 => warn!("remote client found no files to send"),
                     1 => debug!("all transfers were completed before execution"),
                     2 => debug!("remote client completed all transfers"),
-                    _ => break Err(Error::unexpected_message(Box::new(message))),
+                    _ => break Err(ErrorKind::UnexpectedMessage(Box::new(message)).into()),
                 }
 
                 message_sender.close();
                 break Ok(());
             }
-            _ => return Err(Error::unexpected_message(Box::new(message))),
+            _ => return Err(ErrorKind::UnexpectedMessage(Box::new(message)).into()),
         }
     }
 }
@@ -452,7 +452,7 @@ fn free_space(path: &Path) -> Result<u64> {
     };
 
     if status == 0 {
-        Err(Error::status_error())
+        Err(ErrorKind::StatusError.into())
     } else {
         Ok(free_bytes)
     }
@@ -468,7 +468,7 @@ fn parent_path(path: &Path) -> Result<PathBuf> {
     }
 
     while !path.exists() {
-        path = path.parent().ok_or(Error::empty_path())?.to_path_buf();
+        path = path.parent().ok_or(ErrorKind::EmptyPath)?.to_path_buf();
     }
 
     Ok(path)

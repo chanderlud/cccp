@@ -10,7 +10,7 @@ use tokio::io::{self, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
 use crate::cipher::StreamCipherWrapper;
-use crate::error::Error;
+use crate::error::ErrorKind;
 use crate::items::{Crypto, Message};
 use crate::receiver::{Job, WriterQueue};
 use crate::{hash_file, Result, TRANSFER_BUFFER_SIZE, WRITE_BUFFER_SIZE};
@@ -42,7 +42,7 @@ impl SplitQueue {
     pub(crate) async fn send(&self, job: Job, id: u32) -> Result<()> {
         let sender = {
             let senders = self.senders.lock().await;
-            senders.get(&id).ok_or(Error::missing_queue())?.clone()
+            senders.get(&id).ok_or(ErrorKind::MissingQueue)?.clone()
         };
 
         sender.send(job).await?;
@@ -78,6 +78,8 @@ pub(crate) async fn writer(
     let file = OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(false)
+        .append(true)
         .open(&details.partial_path)
         .await?;
 
@@ -99,7 +101,7 @@ pub(crate) async fn writer(
     let receiver = writer_queue
         .get_receiver(&details.id)
         .await
-        .ok_or(Error::missing_queue())?;
+        .ok_or(ErrorKind::MissingQueue)?;
 
     while position != details.size {
         let job = receiver.recv().await?;
@@ -154,7 +156,7 @@ pub(crate) async fn writer(
                 .send(Message::failure(details.id, 0, None))
                 .await?; // notify the sender
             remove_file(&details.partial_path).await?; // remove the partial file
-            return Err(Error::failure(0));
+            return Err(ErrorKind::Failure(0).into());
         } else {
             info!("{:?} passed signature verification", details.path)
         }

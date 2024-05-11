@@ -17,7 +17,7 @@ use tokio::select;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::{interval, Instant};
 
-use crate::error::Error;
+use crate::error::{Error, ErrorKind};
 use crate::items::{message, Confirmations, FileDetail, Manifest, Message, StartIndex};
 use crate::sender::reader::reader;
 use crate::{
@@ -79,9 +79,9 @@ pub(crate) async fn main(
         }
         Some(message::Message::Failure(failure)) => {
             error!("received failure message {}", failure.reason);
-            return Err(Error::failure(failure.reason));
+            return Err(ErrorKind::Failure(failure.reason).into());
         }
-        _ => return Err(Error::unexpected_message(Box::new(message))),
+        _ => return Err(ErrorKind::UnexpectedMessage(Box::new(message)).into()),
     }
 
     let sockets = socket_factory(
@@ -202,7 +202,7 @@ async fn sender(
     }
 
     if retries == max_retries {
-        Err(Error::max_retries())
+        Err(ErrorKind::MaxRetries.into())
     } else {
         Ok(())
     }
@@ -293,7 +293,7 @@ async fn controller(
             Some(message::Message::Failure(failure)) => {
                 warn!("received unknown failure message {:?}", failure);
             }
-            _ => return Err(Error::unexpected_message(Box::new(message))),
+            _ => return Err(ErrorKind::UnexpectedMessage(Box::new(message)).into()),
         }
 
         if files.is_empty() && active.is_empty() {
@@ -462,7 +462,7 @@ async fn split_receiver(
             }
             Some(message::Message::End(_)) => controller_sender.send(message).await?,
             Some(message::Message::Failure(_)) => controller_sender.send(message).await?,
-            _ => return Err(Error::unexpected_message(Box::new(message))),
+            _ => return Err(ErrorKind::UnexpectedMessage(Box::new(message)).into()),
         }
     }
 }
@@ -495,7 +495,7 @@ async fn build_manifest(options: &Options, total_data: &Arc<AtomicUsize>) -> Res
             };
 
             if file == options.source.file_path {
-                file = PathBuf::from(file.iter().last().ok_or(Error::empty_path())?);
+                file = PathBuf::from(file.iter().last().ok_or(ErrorKind::EmptyPath)?);
             } else {
                 file = file.strip_prefix(&options.source.file_path)?.to_path_buf();
             }
