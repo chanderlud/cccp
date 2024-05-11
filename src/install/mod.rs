@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use async_compression::futures::bufread::GzipDecoder;
 use async_ssh2_tokio::Client;
-use futures::{AsyncReadExt, TryStreamExt};
+use futures::{AsyncReadExt, StreamExt, TryStreamExt};
+use http_body_util::BodyStream;
 use log::{debug, error, info, warn};
 use russh_sftp::client::SftpSession;
 use semver::Version;
@@ -34,6 +35,7 @@ pub(crate) async fn installer(
     // loop until the destination is a file
     loop {
         match is_dir(&client, &os, &destination).await {
+            // path exists and is a directory
             Ok(true) => {
                 // append the binary name to the destination if it is a directory
                 match os {
@@ -43,6 +45,7 @@ pub(crate) async fn installer(
 
                 debug!("appended binary name to destination: {:?}", destination);
             }
+            // path exists and is a file
             Ok(false) => {
                 if !overwrite {
                     // async stdout prompt
@@ -68,7 +71,7 @@ pub(crate) async fn installer(
                 }
             }
             Err(error) => match error.kind {
-                // if the file does not exist, that is fine
+                // if the file does not exist, that is fine because it will be created
                 ErrorKind::FileNotFound => break,
                 _ => return Err(error),
             },
@@ -82,7 +85,7 @@ pub(crate) async fn installer(
         let mut content = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut file, &mut content).await?;
 
-        transfer_binary(&client, &content, destination).await?;
+        transfer_binary(&client, &content, &destination, &os).await?;
 
         return Ok(());
     }
@@ -118,12 +121,19 @@ pub(crate) async fn installer(
 
             let response = octocrab._get(asset.browser_download_url.as_str()).await?;
 
-            // convert the response body into a stream of bytes
-            let body_stream = response
-                .into_body()
-                .map_err(|err| IoError::new(IoErrorKind::Other, err));
+            let body_stream = BodyStream::new(response.into_body());
 
-            let reader = body_stream.into_async_read(); // stream -> reader
+            let stream = BodyStream::new(body_stream)
+                .map(|result| match result {
+                    Ok(frame) => match frame.into_data() {
+                        Ok(data) => Ok(data),
+                        Err(_) => Err(ErrorKind::EmptyFrame.into()),
+                    },
+                    Err(error) => Err(error.into()),
+                })
+                .map_err(|error: Error| IoError::new(IoErrorKind::Other, error));
+
+            let reader = stream.into_async_read(); // stream -> reader
             let mut decoder = GzipDecoder::new(reader); // reader -> decoder
 
             let mut buffer = Vec::new();
@@ -131,20 +141,21 @@ pub(crate) async fn installer(
             debug!("decompressed archive to size {}", buffer.len());
 
             let mut archive = Archive::new(buffer.as_slice()); // create archive from buffer
-            let mut file = archive.entries()?.next().ok_or(Error::file_not_found())??; // get the file
+            let mut file = archive.entries()?.next().ok_or(ErrorKind::FileNotFound)??; // get the file
 
             let mut content = Vec::new();
             file.read_to_end(&mut content)?; // read the file into a buffer
             debug!("got file with size {}", content.len());
 
             // install the binary to the destination
-            transfer_binary(&client, &content, destination).await?;
+            transfer_binary(&client, &content, &destination, &os).await?;
 
+            // return to break loop
             return Ok(());
         }
     }
 
-    Err(Error::no_suitable_release())
+    Err(ErrorKind::NoSuitableRelease.into())
 }
 
 async fn identify_os(client: &Client) -> Result<Os> {
@@ -158,7 +169,7 @@ async fn identify_os(client: &Client) -> Result<Os> {
     {
         Ok(Os::UnixLike)
     } else {
-        Err(Error::unknown_os(result.stdout, result.stderr))
+        Err(ErrorKind::UnknownOs((result.stdout, result.stderr)).into())
     }
 }
 
@@ -174,27 +185,33 @@ async fn get_triple(client: &Client, os: &Os) -> Result<String> {
         Ok(result.stdout.replace(['\n', '\r'], ""))
     } else {
         error!("target command failed {}", result.stderr);
-        Err(Error::command_failed(result.exit_status))
+        Err(ErrorKind::CommandFailed(result.exit_status).into())
     }
 }
 
-async fn transfer_binary(client: &Client, content: &[u8], destination: PathBuf) -> Result<()> {
+async fn transfer_binary(
+    client: &Client,
+    content: &[u8],
+    destination: &Path,
+    os: &Os,
+) -> Result<()> {
     let channel = client.get_channel().await?; // get a channel
     channel.request_subsystem(true, "sftp").await?; // start sftp
     let sftp = SftpSession::new(channel.into_stream()).await?; // create sftp session
     debug!("created sftp session");
 
     // create the destination file
-    let mut file = sftp.create(destination.to_string_lossy()).await?;
+    let path = format_path(destination, os);
+    let mut file = sftp.create(&path).await?;
     file.write_all(content).await?; // write the file to the destination
-    debug!("wrote file to {}", destination.display());
+    debug!("wrote file to {}", path);
 
     Ok(())
 }
 
 async fn is_dir(client: &Client, os: &Os, path: &Path) -> Result<bool> {
     let parent_directory = path.parent().map_or(".".into(), |p| p.to_string_lossy());
-    let path = path.to_string_lossy();
+    let path = format_path(path, os);
 
     let command = match os {
         Os::Windows => format!(
@@ -213,11 +230,18 @@ async fn is_dir(client: &Client, os: &Os, path: &Path) -> Result<bool> {
         match result.stdout.chars().next() {
             Some('t') => Ok(true),
             Some('f') => Ok(false),
-            Some('n') => Err(Error::file_not_found()),
-            Some('d') => Err(Error::directory_not_found()),
-            _ => Err(Error::command_failed(result.exit_status)),
+            Some('n') => Err(ErrorKind::FileNotFound.into()),
+            Some('d') => Err(ErrorKind::DirectoryNotFound.into()),
+            _ => Err(ErrorKind::CommandFailed(result.exit_status).into()),
         }
     } else {
-        Err(Error::command_failed(result.exit_status))
+        Err(ErrorKind::CommandFailed(result.exit_status).into())
+    }
+}
+
+fn format_path(path: &Path, os: &Os) -> String {
+    match os {
+        Os::Windows => path.to_string_lossy().replace('/', "\\"),
+        Os::UnixLike => path.to_string_lossy().replace('\\', "/"),
     }
 }
