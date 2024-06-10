@@ -508,12 +508,13 @@ fn password_auth(host: &SocketAddr) -> io::Result<AuthMethod> {
 
 /// print a progress bar & stats to stdout
 async fn local_stats_printer(stats: TransferStats, mut interval: Interval) {
-    let bar = ProgressBar::new(1_000);
+    let bar = ProgressBar::new(100);
+    let start = Instant::now();
 
     bar.set_style(
         ProgressStyle::default_bar()
             .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% [{msg}] ({eta})",
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% {msg}",
             )
             .unwrap()
             .progress_chars("=>-"),
@@ -522,20 +523,31 @@ async fn local_stats_printer(stats: TransferStats, mut interval: Interval) {
     while !stats.is_complete() {
         interval.tick().await;
 
-        let progress = stats.confirmed() as f64 / stats.total() as f64 * 1_000_f64;
+        let progress = stats.confirmed() as f64 / stats.total() as f64;
         let speed = stats.speed();
         let packet_loss = stats.packet_loss();
 
+        let elapsed = start.elapsed();
+        let total_duration_secs = elapsed.as_secs_f64() / progress;
+
+        let remaining_duration = if total_duration_secs.is_finite() {
+            let total_duration = Duration::from_secs_f64(total_duration_secs);
+            total_duration.checked_sub(elapsed).unwrap_or(Duration::ZERO)
+        } else {
+            Duration::ZERO
+        };
+
         bar.set_message(format!(
-            "{:.1}MB/s {:.1}% packet loss",
+            "[{:.1}MB/s {:.1}% packet loss] ({})",
             speed,
-            packet_loss * 100_f64
+            packet_loss * 100_f64,
+            format_duration(remaining_duration)
         ));
 
-        bar.set_position(progress as u64);
+        bar.set_position((progress * 100_f64) as u64);
     }
 
-    bar.finish_with_message("complete");
+    bar.finish_with_message("[complete]");
 }
 
 /// writes the Stats message into stdout
@@ -684,5 +696,18 @@ fn wait_for_stop(signal: Arc<Notify>) {
             signal.notify_waiters();
             break;
         }
+    }
+}
+
+/// formats the ETA duration for the progress bar
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs_f64();
+
+    if seconds < 180_f64 {
+        format!("{:.1}s", seconds)
+    } else if seconds < 3_600_f64 {
+        format!("{:.1}m", seconds / 60_f64)
+    } else {
+        format!("{:.1}h", seconds / 3_600_f64)
     }
 }
