@@ -73,7 +73,7 @@ pub(crate) struct Options {
     pub(crate) log_level: LevelFilter,
 
     /// Data send rate [b, kb, mb, gb, tb]
-    #[clap(short, long, default_value = "1mb")]
+    #[clap(short, long, default_value = "20mb")]
     rate: ByteSize,
 
     /// Maximum concurrent transfers
@@ -166,7 +166,7 @@ impl Options {
             format!("\"{}\"", self.destination),
         ];
 
-        // optional arguments are inserted at index 1 so they are always before the IoSpecs
+        // optional arguments are inserted at index 1, so they are always before the IoSpecs
         if self.overwrite {
             arguments.insert(1, String::from("-o"))
         }
@@ -368,7 +368,7 @@ impl FromStr for IoSpec {
                 match host.parse() {
                     Ok(ip) => Ok(SocketAddr::new(ip, port)),
                     Err(_) => {
-                        // if the host is not an ip address, try to resolve  it as a domain
+                        // if the host is not an ip address, try to resolve it as a domain
                         (host, port)
                             .to_socket_addrs()?
                             .next() // use the first address

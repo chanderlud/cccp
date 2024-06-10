@@ -577,8 +577,8 @@ async fn command_runner(
     loop {
         select! {
             _ = cancel_signal.notified() => {
-                // the remote client listens for STOP in it's stdin
-                // this is more reliable & cross platform than sending a signal
+                // the remote client listens for STOP in its stdin
+                // this is more reliable & cross-platform than sending a signal
                 channel.data(&b"STOP\n"[..]).await?;
                 debug!("sent STOP message");
             }
