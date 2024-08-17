@@ -56,7 +56,7 @@ pub(crate) enum ErrorKind {
     CommandFailed(u32),
     /// os identification failed on the remote host
     #[cfg(feature = "installer")]
-    UnknownOs((String, String)),
+    UnknownOs(Box<(String, String)>),
     /// no suitable release was found on GitHub
     #[cfg(feature = "installer")]
     NoSuitableRelease,
@@ -266,7 +266,8 @@ impl std::fmt::Display for Error {
                 write!(f, "command failed with status {}", status)
             }
             #[cfg(feature = "installer")]
-            ErrorKind::UnknownOs((ref stdout, ref stderr)) => {
+            ErrorKind::UnknownOs(ref data) => {
+                let (ref stdout, ref stderr) = *data.clone();
                 write!(f, "unknown os {} | {}", stdout, stderr)
             }
             #[cfg(feature = "installer")]

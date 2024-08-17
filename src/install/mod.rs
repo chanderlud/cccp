@@ -169,7 +169,7 @@ async fn identify_os(client: &Client) -> Result<Os> {
     {
         Ok(Os::UnixLike)
     } else {
-        Err(ErrorKind::UnknownOs((result.stdout, result.stderr)).into())
+        Err(ErrorKind::UnknownOs(Box::new((result.stdout, result.stderr))).into())
     }
 }
 
