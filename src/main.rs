@@ -513,9 +513,7 @@ async fn local_stats_printer(stats: TransferStats, mut interval: Interval) {
 
     bar.set_style(
         ProgressStyle::default_bar()
-            .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% {msg}",
-            )
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% {msg}")
             .unwrap()
             .progress_chars("=>-"),
     );
@@ -532,7 +530,9 @@ async fn local_stats_printer(stats: TransferStats, mut interval: Interval) {
 
         let remaining_duration = if total_duration_secs.is_finite() {
             let total_duration = Duration::from_secs_f64(total_duration_secs);
-            total_duration.checked_sub(elapsed).unwrap_or(Duration::ZERO)
+            total_duration
+                .checked_sub(elapsed)
+                .unwrap_or(Duration::ZERO)
         } else {
             Duration::ZERO
         };

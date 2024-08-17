@@ -1,6 +1,6 @@
 [package]
 name = "cccp"
-version = "0.11.4"
+version = "0.11.5"
 edition = "2021"
 build = "build.rs"
 repository = "https://github.com/chanderlud/cccp"
@@ -10,44 +10,44 @@ authors = ["Chander Luderman Miller <me@chanchan.dev>"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-tokio = { version = "1.38", default-features = false, features = ["macros", "fs", "io-util", "signal", "io-std"] }
+tokio = { version = "1.39", default-features = false, features = ["macros", "fs", "io-util", "signal", "io-std"] }
 futures = "0.3"
 log = { version = "0.4", features = ["std"] }
-async-ssh2-tokio = "0.8.10"
-russh = "0.43.0"
+async-ssh2-tokio = { git = "https://github.com/chanderlud/async-ssh2-tokio" }
+russh = "0.45"
 simple-logging = "2.0"
 regex = "1.10"
 dirs = "5.0"
 rpassword = "7.3"
 indicatif = "0.17"
-prost = "0.12"
+prost = "0.13"
 bytesize = "1.3"
 kanal = "0.1.0-pre8"
 blake3 = "1.5"
 chacha20 = "0.9"
-base64 = "0.22.0"
+base64 = "0.22"
 ctr = "0.9"
 aes = "0.8"
 whoami = "1.5"
 cipher = "0.4"
 rand = "0.8"
 
-octocrab = { version = "0.38", optional = true }
+octocrab = { version = "0.39", optional = true }
 async-compression = { version = "0.4", features = ["futures-io", "gzip"], optional = true }
 tar = { version = "0.4", optional = true }
 semver = { version = "1.0", optional = true }
 http-body-util = { version = "*", optional = true }
-russh-sftp = { version = "2.0.1", optional = true }
+russh-sftp = { git = "https://github.com/chanderlud/russh-sftp", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
 widestring = "1.0"
 
 [build-dependencies]
-prost-build = "0.12"
+prost-build = "0.13"
 
 [features]
 default = ["installer"]

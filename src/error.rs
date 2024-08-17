@@ -2,7 +2,7 @@ use std::array::TryFromSliceError;
 use std::fmt::Formatter;
 
 use kanal::{ReceiveError, SendError};
-use prost::Message;
+use prost::{Message, UnknownEnumValue};
 use tokio::io;
 use tokio::sync::AcquireError;
 
@@ -67,6 +67,7 @@ pub(crate) enum ErrorKind {
     #[cfg(feature = "installer")]
     DirectoryNotFound,
     EmptyFrame,
+    UnknownEnumValue(UnknownEnumValue),
 }
 
 impl From<io::Error> for Error {
@@ -210,6 +211,14 @@ impl From<semver::Error> for Error {
     }
 }
 
+impl From<UnknownEnumValue> for Error {
+    fn from(error: UnknownEnumValue) -> Self {
+        Self {
+            kind: ErrorKind::UnknownEnumValue(error),
+        }
+    }
+}
+
 impl From<ErrorKind> for Error {
     fn from(kind: ErrorKind) -> Self {
         Self { kind }
@@ -269,6 +278,7 @@ impl std::fmt::Display for Error {
             #[cfg(feature = "installer")]
             ErrorKind::DirectoryNotFound => write!(f, "directory not found"),
             ErrorKind::EmptyFrame => write!(f, "empty frame"),
+            ErrorKind::UnknownEnumValue(ref error) => write!(f, "unknown enum value: {:?}", error),
         }
     }
 }
