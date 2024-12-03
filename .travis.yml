@@ -14,12 +14,12 @@ jobs:
   include:
     - env: TARGET=x86_64-pc-windows-gnu ENABLE_TESTS=1
     - env: TARGET=x86_64-unknown-linux-gnu ENABLE_TESTS=1
-    - env: TARGET=x86_64-apple-darwin
+    - env: TARGET=x86_64-apple-darwin NO_INSTALLER=1
 
     # OSX
     # - env: TARGET=i686-apple-darwin
     - if: tag IS present
-      env: TARGET=aarch64-apple-darwin
+      env: TARGET=aarch64-apple-darwin NO_INSTALLER=1
 
     # Windows
     - if: tag IS present
