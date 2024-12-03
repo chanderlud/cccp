@@ -25,7 +25,7 @@ main() {
     if [ "${NO_INSTALLER:-0}" = "1" ]; then
         cross build --target $TARGET --no-default-features --profile $PROFILE
     else
-        cross build --target $TARGET --release --profile $PROFILE
+        cross build --target $TARGET --profile $PROFILE
     fi
 
     if [[ -f "target/${TARGET}/release/${CRATE_NAME}.exe" ]]; then
