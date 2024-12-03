@@ -106,7 +106,12 @@ script: bash ci/script.sh
 
 after_script: set +e
 
-before_deploy: bash ci/before_deploy.sh
+before_deploy:
+  - bash ci/before_deploy.sh
+  - yes | gem update --system --force
+  - gem install bundler
+  - gem install uri
+  - gem install logger
 
 deploy:
   token:
