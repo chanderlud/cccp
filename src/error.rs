@@ -1,15 +1,15 @@
-use std::array::TryFromSliceError;
-use std::fmt::Formatter;
-
 use kanal::{ReceiveError, SendError};
 use prost::{Message, UnknownEnumValue};
+use std::array::TryFromSliceError;
+use std::fmt::Formatter;
+use std::ops::Deref;
 use tokio::io;
 use tokio::sync::AcquireError;
 
 /// generic error type for cccp
 #[derive(Debug)]
 pub(crate) struct Error {
-    pub(crate) kind: ErrorKind,
+    pub(crate) kind: Box<ErrorKind>,
 }
 
 impl std::error::Error for Error {}
@@ -73,7 +73,7 @@ pub(crate) enum ErrorKind {
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
         Self {
-            kind: ErrorKind::Io(error),
+            kind: Box::new(ErrorKind::Io(error)),
         }
     }
 }
@@ -81,7 +81,7 @@ impl From<io::Error> for Error {
 impl From<std::net::AddrParseError> for Error {
     fn from(error: std::net::AddrParseError) -> Self {
         Self {
-            kind: ErrorKind::AddrParse(error),
+            kind: Box::new(ErrorKind::AddrParse(error)),
         }
     }
 }
@@ -89,7 +89,7 @@ impl From<std::net::AddrParseError> for Error {
 impl From<prost::DecodeError> for Error {
     fn from(error: prost::DecodeError) -> Self {
         Self {
-            kind: ErrorKind::Decode(error),
+            kind: Box::new(ErrorKind::Decode(error)),
         }
     }
 }
@@ -97,7 +97,7 @@ impl From<prost::DecodeError> for Error {
 impl From<tokio::task::JoinError> for Error {
     fn from(error: tokio::task::JoinError) -> Self {
         Self {
-            kind: ErrorKind::Join(error),
+            kind: Box::new(ErrorKind::Join(error)),
         }
     }
 }
@@ -105,7 +105,7 @@ impl From<tokio::task::JoinError> for Error {
 impl From<SendError> for Error {
     fn from(error: SendError) -> Self {
         Self {
-            kind: ErrorKind::Send(error),
+            kind: Box::new(ErrorKind::Send(error)),
         }
     }
 }
@@ -113,7 +113,7 @@ impl From<SendError> for Error {
 impl From<ReceiveError> for Error {
     fn from(error: ReceiveError) -> Self {
         Self {
-            kind: ErrorKind::Receive(error),
+            kind: Box::new(ErrorKind::Receive(error)),
         }
     }
 }
@@ -121,7 +121,7 @@ impl From<ReceiveError> for Error {
 impl From<AcquireError> for Error {
     fn from(error: AcquireError) -> Self {
         Self {
-            kind: ErrorKind::Acquire(error),
+            kind: Box::new(ErrorKind::Acquire(error)),
         }
     }
 }
@@ -129,7 +129,7 @@ impl From<AcquireError> for Error {
 impl From<TryFromSliceError> for Error {
     fn from(error: TryFromSliceError) -> Self {
         Self {
-            kind: ErrorKind::TryFromSlice(error),
+            kind: Box::new(ErrorKind::TryFromSlice(error)),
         }
     }
 }
@@ -138,7 +138,7 @@ impl From<TryFromSliceError> for Error {
 impl From<widestring::error::ContainsNul<u16>> for Error {
     fn from(error: widestring::error::ContainsNul<u16>) -> Self {
         Self {
-            kind: ErrorKind::ContainsNull(error),
+            kind: Box::new(ErrorKind::ContainsNull(error)),
         }
     }
 }
@@ -147,7 +147,7 @@ impl From<widestring::error::ContainsNul<u16>> for Error {
 impl From<nix::Error> for Error {
     fn from(error: nix::Error) -> Self {
         Self {
-            kind: ErrorKind::Nix(error),
+            kind: Box::new(ErrorKind::Nix(error)),
         }
     }
 }
@@ -155,7 +155,7 @@ impl From<nix::Error> for Error {
 impl From<std::path::StripPrefixError> for Error {
     fn from(error: std::path::StripPrefixError) -> Self {
         Self {
-            kind: ErrorKind::StripPrefix(error),
+            kind: Box::new(ErrorKind::StripPrefix(error)),
         }
     }
 }
@@ -163,7 +163,7 @@ impl From<std::path::StripPrefixError> for Error {
 impl From<async_ssh2_tokio::Error> for Error {
     fn from(error: async_ssh2_tokio::Error) -> Self {
         Self {
-            kind: ErrorKind::AsyncSsh(error),
+            kind: Box::new(ErrorKind::AsyncSsh(error)),
         }
     }
 }
@@ -171,7 +171,7 @@ impl From<async_ssh2_tokio::Error> for Error {
 impl From<russh::Error> for Error {
     fn from(error: russh::Error) -> Self {
         Self {
-            kind: ErrorKind::RuSsh(error),
+            kind: Box::new(ErrorKind::RuSsh(error)),
         }
     }
 }
@@ -179,7 +179,7 @@ impl From<russh::Error> for Error {
 impl From<base64::DecodeError> for Error {
     fn from(error: base64::DecodeError) -> Self {
         Self {
-            kind: ErrorKind::Base64Decode(error),
+            kind: Box::new(ErrorKind::Base64Decode(error)),
         }
     }
 }
@@ -188,7 +188,7 @@ impl From<base64::DecodeError> for Error {
 impl From<octocrab::Error> for Error {
     fn from(error: octocrab::Error) -> Self {
         Self {
-            kind: ErrorKind::Octocrab(error),
+            kind: Box::new(ErrorKind::Octocrab(error)),
         }
     }
 }
@@ -197,7 +197,7 @@ impl From<octocrab::Error> for Error {
 impl From<russh_sftp::client::error::Error> for Error {
     fn from(error: russh_sftp::client::error::Error) -> Self {
         Self {
-            kind: ErrorKind::Sftp(error),
+            kind: Box::new(ErrorKind::Sftp(error)),
         }
     }
 }
@@ -206,7 +206,7 @@ impl From<russh_sftp::client::error::Error> for Error {
 impl From<semver::Error> for Error {
     fn from(error: semver::Error) -> Self {
         Self {
-            kind: ErrorKind::SemVer(error),
+            kind: Box::new(ErrorKind::SemVer(error)),
         }
     }
 }
@@ -214,20 +214,22 @@ impl From<semver::Error> for Error {
 impl From<UnknownEnumValue> for Error {
     fn from(_: UnknownEnumValue) -> Self {
         Self {
-            kind: ErrorKind::UnknownEnumValue,
+            kind: Box::new(ErrorKind::UnknownEnumValue),
         }
     }
 }
 
 impl From<ErrorKind> for Error {
     fn from(kind: ErrorKind) -> Self {
-        Self { kind }
+        Self {
+            kind: Box::new(kind),
+        }
     }
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.kind {
+        match self.kind.deref() {
             ErrorKind::Io(ref error) => write!(f, "IO error: {}", error),
             ErrorKind::AddrParse(ref error) => write!(f, "Address parse error: {}", error),
             ErrorKind::Decode(ref error) => write!(f, "Decode error: {}", error),

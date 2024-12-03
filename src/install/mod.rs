@@ -1,4 +1,5 @@
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use async_compression::futures::bufread::GzipDecoder;
@@ -70,7 +71,7 @@ pub(crate) async fn installer(
                     return Ok(());
                 }
             }
-            Err(error) => match error.kind {
+            Err(error) => match error.kind.deref() {
                 // if the file does not exist, that is fine because it will be created
                 ErrorKind::FileNotFound => break,
                 _ => return Err(error),
