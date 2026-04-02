@@ -1,7 +1,7 @@
 # cccp
 A network file transfer utility inspired by [bbcp](https://github.com/eeertekin/bbcp)
 with a focus on cross-platform support, a high level of configurability, security, 
-efficiency, and of course speed.
+efficiency, and of course speed. Learn more at [chanchan.dev](https://chanchan.dev/work/cccp).
 
 ## IoSpec
 IoSpecs define local or remote files with connection details for ssh. If you have 
